@@ -1,21 +1,57 @@
+/* ===== Liquid Glass design tokens ===== */
+:root {
+    --glass-bg: rgba(255, 255, 255, 0.07);
+    --glass-bg-strong: rgba(255, 255, 255, 0.12);
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --glass-border-strong: rgba(255, 255, 255, 0.22);
+    --glass-blur: 20px;
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --radius-sm: 10px;
+    --accent: #4facfe;
+    --accent-2: #00f2fe;
+    --shadow-glass: 0 10px 35px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
 body {
-    background: linear-gradient(135deg, #0d233a 0%, #1a365d 100%);
+    /* Two soft glowing color blobs behind the glass surfaces give the whole
+       app the sense of depth/light that liquid glass is meant to catch —
+       a flat single-color gradient reads as plain by comparison. */
+    background:
+        radial-gradient(circle at 10% 10%, rgba(79, 172, 254, 0.16) 0%, transparent 40%),
+        radial-gradient(circle at 90% 30%, rgba(0, 242, 254, 0.12) 0%, transparent 40%),
+        radial-gradient(circle at 50% 100%, rgba(79, 172, 254, 0.10) 0%, transparent 50%),
+        linear-gradient(135deg, #0d233a 0%, #142d4c 50%, #1a365d 100%);
+    background-attachment: fixed;
     min-height: 100vh;
     color: #e2e8f0;
 }
 
+/* Slimmer, glass-tinted scrollbar so it doesn't look like a stock OS
+   scrollbar dropped on top of a frosted interface. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); background-clip: content-box; }
+
 .navbar {
-    background: rgba(13, 35, 58, 0.85);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(13, 35, 58, 0.55);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-bottom: 1px solid var(--glass-border);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 8px 24px rgba(0, 0, 0, 0.25);
     color: white;
     display: flex;
     justify-content: space-between;
@@ -35,6 +71,7 @@ body {
     height: 45px;
     width: auto;
     object-fit: contain;
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.3));
 }
 
 .main-container {
@@ -44,10 +81,10 @@ body {
 
 .sidebar {
     width: 240px;
-    background: rgba(26, 32, 44, 0.85);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-right: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(20, 30, 48, 0.5);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-right: 1px solid var(--glass-border);
     color: white;
     padding-top: 20px;
 }
@@ -57,15 +94,23 @@ body {
 }
 
 .sidebar li {
-    padding: 15px 20px;
+    padding: 14px 20px;
+    margin: 3px 10px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: 0.3s;
+    transition: all 0.25s ease;
     color: #cbd5e0;
 }
 
-.sidebar li:hover, .sidebar li.active {
-    background: rgba(43, 108, 176, 0.6);
-    backdrop-filter: blur(5px);
+.sidebar li:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+}
+
+.sidebar li.active {
+    background: linear-gradient(135deg, rgba(79, 172, 254, 0.35) 0%, rgba(0, 242, 254, 0.18) 100%);
+    border: 1px solid rgba(79, 172, 254, 0.4);
+    box-shadow: 0 4px 16px rgba(79, 172, 254, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.2);
     color: #fff;
 }
 
@@ -82,28 +127,29 @@ body {
 }
 
 .card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 8px 14px;
-    border-radius: 10px;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-    border-left: 5px solid #ccc;
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-glass);
+    border-left: 3px solid #ccc;
     color: #fff;
 }
 
-.card-red { border-left-color: #e53e3e; }
-.card-yellow { border-left-color: #dd6b20; }
-.card-blue { border-left-color: #3182ce; }
+.card-red { border-left-color: #f56565; }
+.card-yellow { border-left-color: #ed8936; }
+.card-blue { border-left-color: #4facfe; }
 
 .card.clickable-card {
     cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
 }
 .card.clickable-card:hover {
     transform: translateY(-4px);
-    box-shadow: 0 12px 36px 0 rgba(0, 0, 0, 0.5);
+    background: var(--glass-bg-strong);
+    box-shadow: 0 16px 40px 0 rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .card h3 {
@@ -127,11 +173,12 @@ body {
     margin-bottom: 10px;
 }
 .chart-card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-glass);
     padding: 8px 12px;
 }
 .chart-card h3 {
@@ -159,13 +206,13 @@ body {
 }
 
 .form-section, .table-section {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 20px;
-    border-radius: 12px;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    padding: 22px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-glass);
     margin-bottom: 25px;
     position: relative;
     color: #fff;
@@ -184,11 +231,12 @@ body {
 
 .form-group input, .form-group select, .form-group textarea {
     width: 100%;
-    padding: 10px;
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 6px;
+    padding: 11px 12px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--glass-border-strong);
+    border-radius: var(--radius-sm);
     color: #fff;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 /* The <select> box itself is styled white-on-dark above, but the dropdown
@@ -207,33 +255,42 @@ body {
 
 .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
     outline: none;
-    border-color: #3182ce;
-    background: rgba(255, 255, 255, 0.15);
+    border-color: var(--accent);
+    background: rgba(255, 255, 255, 0.13);
+    box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.15);
 }
 
 .btn-submit {
-    background: linear-gradient(135deg, #3182ce 0%, #2b6cb0 100%);
-    color: white;
+    background: linear-gradient(135deg, var(--accent-2) 0%, var(--accent) 100%);
+    color: #0d233a;
     border: none;
-    padding: 10px 20px;
-    border-radius: 6px;
+    padding: 11px 22px;
+    border-radius: 30px;
     cursor: pointer;
-    font-weight: bold;
-    box-shadow: 0 4px 15px rgba(49, 130, 206, 0.4);
-    transition: 0.2s;
+    font-weight: 800;
+    box-shadow: 0 4px 20px rgba(79, 172, 254, 0.4);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .btn-submit:hover {
-    opacity: 0.9;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(79, 172, 254, 0.6);
 }
 
 .btn-logout {
-    background-color: #e53e3e;
+    background: linear-gradient(135deg, #fc8181 0%, #e53e3e 100%);
     color: white;
     border: none;
-    padding: 8px 15px;
-    border-radius: 5px;
+    padding: 8px 16px;
+    border-radius: 20px;
     cursor: pointer;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(229, 62, 62, 0.35);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.btn-logout:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(229, 62, 62, 0.5);
 }
 
 .data-table {
@@ -244,25 +301,27 @@ body {
 }
 
 .data-table th, .data-table td {
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     padding: 12px;
     text-align: left;
 }
 
 .data-table th {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.07);
+    font-weight: 700;
 }
 
 .data-table tr:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(255, 255, 255, 0.04);
 }
 
 /* Modal CSS */
 .modal-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0, 0, 0, 0.75);
-    backdrop-filter: blur(5px);
+    background: rgba(5, 12, 24, 0.65);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -270,17 +329,19 @@ body {
 }
 
 .modal-box {
-    background: #1a202c;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: linear-gradient(160deg, rgba(30, 42, 61, 0.85) 0%, rgba(20, 30, 48, 0.9) 100%);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border-strong);
     color: #fff;
-    padding: 20px;
-    border-radius: 12px;
+    padding: 22px;
+    border-radius: var(--radius-lg);
     width: 85%;
     max-width: 900px;
     max-height: 90vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .modal-header {

@@ -2,10 +2,36 @@
 <html lang="am">
 <head>
     <meta charset="UTF-8">
+    <!-- Runs immediately, before the browser parses or paints anything
+         below — this is what stops a logged-out visitor from ever seeing a
+         flash of the dashboard before landing on the login page. The
+         equivalent check inside app.js runs too late: that script only
+         loads at the very bottom of the page, so by the time it executes
+         the browser has already painted the full dashboard layout, and the
+         redirect used to show it briefly first before jumping to login. -->
+    <script>
+        if (!sessionStorage.getItem("user")) {
+            location.replace("login.html");
+        }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fountain International Trading PLC - Dashboard</title>
+    <!-- Icon/branding shown on the phone's home screen and browser tab —
+         without these, "Add to Home Screen" falls back to a generic blank
+         icon and the page's raw URL instead of the company name. -->
+    <link rel="icon" type="image/png" href="images/logo.png">
+    <link rel="apple-touch-icon" href="images/logo.png">
+    <meta name="apple-mobile-web-app-title" content="Fountain PLC">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0d233a">
+    <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         /* Toast & Notification Bell Styles (Glassmorphism adjusted) */
         .notification-wrapper {

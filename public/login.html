@@ -4,77 +4,139 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - Fountain International Trading PLC</title>
+    <link rel="icon" type="image/png" href="images/logo.png">
+    <link rel="apple-touch-icon" href="images/logo.png">
+    <meta name="apple-mobile-web-app-title" content="Fountain PLC">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0d233a">
+    <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        * { box-sizing: border-box; }
         body {
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
-            background-color: #0d233a;
             margin: 0;
-            font-family: sans-serif;
             padding: 20px;
+            font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            /* Deep navy base plus two soft glowing color blobs behind the
+               glass card — this is what gives a flat dark page the sense of
+               depth/light that "liquid glass" surfaces are meant to catch. */
+            background:
+                radial-gradient(circle at 15% 20%, rgba(79, 172, 254, 0.25) 0%, transparent 45%),
+                radial-gradient(circle at 85% 80%, rgba(0, 242, 254, 0.18) 0%, transparent 45%),
+                linear-gradient(135deg, #0d233a 0%, #142d4c 50%, #1a365d 100%);
+            background-attachment: fixed;
+            position: relative;
+            overflow-x: hidden;
+        }
+        .login-logo {
+            display: block;
+            height: 56px;
+            width: auto;
+            margin: 0 auto 14px;
+            object-fit: contain;
+            filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
         }
         .login-card {
-            background: white;
+            background: linear-gradient(160deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.04) 100%);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
             padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            border-radius: 22px;
+            box-shadow:
+                0 20px 50px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.25);
             width: 100%;
             max-width: 380px;
             text-align: center;
+            color: #f0f4f8;
+            position: relative;
+            z-index: 1;
         }
         .login-card h2 {
             margin-bottom: 10px;
-            color: #0d233a;
-            font-size: 1.3rem;
+            color: #ffffff;
+            font-size: 1.25rem;
+            font-weight: 700;
         }
         .login-card input,
         .login-card select {
             width: 90%;
-            padding: 12px;
+            padding: 13px 14px;
             margin: 10px 0;
-            border: 1px solid #ccc;
-            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 12px;
             font-size: 1rem;
+            color: #ffffff;
+            font-family: inherit;
+            transition: border-color 0.2s ease, background 0.2s ease;
         }
+        .login-card input::placeholder { color: rgba(255, 255, 255, 0.5); }
+        .login-card input:focus,
+        .login-card select:focus {
+            outline: none;
+            border-color: #4facfe;
+            background: rgba(255, 255, 255, 0.13);
+        }
+        .login-card select option { color: #1a202c; }
         .btn-login {
             width: 96%;
-            padding: 12px;
-            background-color: #1e3a5f;
-            color: white;
+            padding: 13px;
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            color: #0d233a;
             border: none;
-            border-radius: 5px;
+            border-radius: 30px;
             font-size: 1rem;
+            font-weight: 800;
             cursor: pointer;
-            margin-top: 10px;
+            margin-top: 12px;
+            box-shadow: 0 4px 20px rgba(79, 172, 254, 0.45);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
         .btn-login:hover {
-            background-color: #2c5282;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(79, 172, 254, 0.7);
         }
         .error-msg {
-            color: red;
-            font-size: 0.9rem;
-            margin-top: 10px;
+            color: #feb2b2;
+            background: rgba(229, 62, 62, 0.15);
+            border: 1px solid rgba(229, 62, 62, 0.35);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-size: 0.85rem;
+            margin-top: 12px;
             display: none;
         }
         .success-msg {
-            color: #2f855a;
-            font-size: 0.9rem;
-            margin-top: 10px;
+            color: #9ae6b4;
+            background: rgba(72, 187, 120, 0.15);
+            border: 1px solid rgba(72, 187, 120, 0.35);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-size: 0.85rem;
+            margin-top: 12px;
             display: none;
         }
         .switch-link {
             display: block;
             margin-top: 16px;
-            color: #2b6cb0;
+            color: #7dd3fc;
             font-size: 0.85rem;
             cursor: pointer;
             text-decoration: underline;
         }
         .switch-link:hover {
-            color: #1e3a5f;
+            color: #ffffff;
         }
         /* Six individual boxes for the emailed code — unmistakably a code
            field, so it can never be confused with a username/email field. */
@@ -96,19 +158,21 @@
         }
         .step-hint {
             display: inline-block;
-            background: #edf2f7;
-            color: #2d3748;
+            background: rgba(79, 172, 254, 0.18);
+            border: 1px solid rgba(79, 172, 254, 0.35);
+            color: #7dd3fc;
             font-size: 0.78rem;
             font-weight: bold;
-            padding: 3px 10px;
+            padding: 3px 12px;
             border-radius: 20px;
             margin-bottom: 10px;
         }
+        .login-card p { color: rgba(255, 255, 255, 0.65); }
         @media (max-width: 420px) {
             body { padding: 10px; }
-            .login-card { padding: 26px 18px; }
+            .login-card { padding: 30px 20px; border-radius: 18px; }
             .login-card h2 { font-size: 1.1rem; }
-            .login-card input, .login-card select { width: 100%; padding: 11px; font-size: 0.95rem; }
+            .login-card input, .login-card select { width: 100%; padding: 12px; font-size: 0.95rem; }
             .btn-login { width: 100%; }
         }
     </style>
@@ -117,8 +181,9 @@
 
     <!-- LOGIN CARD -->
     <div class="login-card" id="login-card">
+        <img src="images/logo.png" alt="Fountain Logo" class="login-logo" onerror="this.style.display='none'">
         <h2>Fountain International Trading PLC</h2>
-        <p style="color: #666; margin-bottom: 20px; font-size: 0.9rem;">እባክዎን Username እና Password ያስገቡ</p>
+        <p style="margin-bottom: 20px; font-size: 0.9rem;">እባክዎን Username እና Password ያስገቡ</p>
 
         <form id="login-form">
             <input type="text" id="username" placeholder="Username" required>
@@ -136,7 +201,7 @@
     <div class="login-card" id="forgot-card" style="display:none;">
         <span class="step-hint">ደረጃ 1/3</span>
         <h2>የይለፍ ቃል መቀየሪያ ኮድ ይጠይቁ</h2>
-        <p style="color: #666; margin-bottom: 15px; font-size: 0.9rem;">Username ወይም Email ያስገቡ፣ የማረጋገጫ ኮድ ወደ የተመዘገበው ኢሜይል ይላካል።</p>
+        <p style="color: rgba(255,255,255,0.65); margin-bottom: 15px; font-size: 0.9rem;">Username ወይም Email ያስገቡ፣ የማረጋገጫ ኮድ ወደ የተመዘገበው ኢሜይል ይላካል።</p>
 
         <form id="forgot-form">
             <input type="text" id="forgot-identifier" placeholder="Username ወይም Email" required>
@@ -155,7 +220,7 @@
     <div class="login-card" id="reset-code-card" style="display:none;">
         <span class="step-hint">ደረጃ 2/3</span>
         <h2>ኮዱን ያስገቡ</h2>
-        <p style="color: #666; margin-bottom: 6px; font-size: 0.9rem;">ወደ <strong id="reset-code-target"></strong> የተላከውን 6-አሃዝ ኮድ ያስገቡ።</p>
+        <p style="color: rgba(255,255,255,0.65); margin-bottom: 6px; font-size: 0.9rem;">ወደ <strong id="reset-code-target"></strong> የተላከውን 6-አሃዝ ኮድ ያስገቡ።</p>
 
         <form id="reset-code-form">
             <div class="otp-boxes">
@@ -181,7 +246,7 @@
     <div class="login-card" id="reset-newpass-card" style="display:none;">
         <span class="step-hint">ደረጃ 3/3</span>
         <h2>አዲስ የይለፍ ቃል ያስገቡ</h2>
-        <p style="color: #666; margin-bottom: 15px; font-size: 0.9rem;">ኮዱ ተረጋግጧል። አዲሱን የይለፍ ቃል ሁለት ጊዜ ያስገቡ።</p>
+        <p style="color: rgba(255,255,255,0.65); margin-bottom: 15px; font-size: 0.9rem;">ኮዱ ተረጋግጧል። አዲሱን የይለፍ ቃል ሁለት ጊዜ ያስገቡ።</p>
 
         <form id="reset-newpass-form">
             <input type="password" id="reset-new-password" placeholder="አዲስ የይለፍ ቃል" required minlength="4">
@@ -197,8 +262,9 @@
 
     <!-- SIGN UP CARD -->
     <div class="login-card" id="signup-card" style="display:none;">
+        <img src="images/logo.png" alt="Fountain Logo" class="login-logo" onerror="this.style.display='none'">
         <h2>አዲስ መለያ ይክፈቱ</h2>
-        <p style="color: #666; margin-bottom: 15px; font-size: 0.9rem;">ከምዝገባ በኋላ አድሚን እስኪያፀድቅ ድረስ መጠበቅ ያስፈልጋል።</p>
+        <p style="color: rgba(255,255,255,0.65); margin-bottom: 15px; font-size: 0.9rem;">ከምዝገባ በኋላ አድሚን እስኪያፀድቅ ድረስ መጠበቅ ያስፈልጋል።</p>
 
         <form id="signup-form">
             <input type="text" id="su-fullname" placeholder="ሙሉ ስም" required>
