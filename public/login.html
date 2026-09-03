@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="am">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Fountain International Trading PLC</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #0d233a;
+            margin: 0;
+            font-family: sans-serif;
+            padding: 20px;
+        }
+        .login-card {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+        }
+        .login-card h2 {
+            margin-bottom: 10px;
+            color: #0d233a;
+            font-size: 1.3rem;
+        }
+        .login-card input,
+        .login-card select {
+            width: 90%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 1rem;
+        }
+        .btn-login {
+            width: 96%;
+            padding: 12px;
+            background-color: #1e3a5f;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .btn-login:hover {
+            background-color: #2c5282;
+        }
+        .error-msg {
+            color: red;
+            font-size: 0.9rem;
+            margin-top: 10px;
+            display: none;
+        }
+        .success-msg {
+            color: #2f855a;
+            font-size: 0.9rem;
+            margin-top: 10px;
+            display: none;
+        }
+        .switch-link {
+            display: block;
+            margin-top: 16px;
+            color: #2b6cb0;
+            font-size: 0.85rem;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .switch-link:hover {
+            color: #1e3a5f;
+        }
+        /* Six individual boxes for the emailed code — unmistakably a code
+           field, so it can never be confused with a username/email field. */
+        .otp-boxes {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin: 14px 0;
+        }
+        .otp-boxes input {
+            width: 42px !important;
+            height: 52px;
+            padding: 0 !important;
+            margin: 0 !important;
+            text-align: center;
+            font-size: 1.4rem;
+            font-weight: bold;
+            letter-spacing: 0;
+        }
+        .step-hint {
+            display: inline-block;
+            background: #edf2f7;
+            color: #2d3748;
+            font-size: 0.78rem;
+            font-weight: bold;
+            padding: 3px 10px;
+            border-radius: 20px;
+            margin-bottom: 10px;
+        }
+        @media (max-width: 420px) {
+            body { padding: 10px; }
+            .login-card { padding: 26px 18px; }
+            .login-card h2 { font-size: 1.1rem; }
+            .login-card input, .login-card select { width: 100%; padding: 11px; font-size: 0.95rem; }
+            .btn-login { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- LOGIN CARD -->
+    <div class="login-card" id="login-card">
+        <h2>Fountain International Trading PLC</h2>
+        <p style="color: #666; margin-bottom: 20px; font-size: 0.9rem;">እባክዎን Username እና Password ያስገቡ</p>
+
+        <form id="login-form">
+            <input type="text" id="username" placeholder="Username" required>
+            <input type="password" id="password" placeholder="Password" required>
+            <button type="submit" class="btn-login">ይግቡ (Login)</button>
+        </form>
+
+        <p class="error-msg" id="error-message"></p>
+
+        <span class="switch-link" onclick="showSignup()">አዲስ ተጠቃሚ ነኝ? መለያ ይክፈቱ (Sign Up)</span>
+        <span class="switch-link" onclick="showForgot()">የይለፍ ቃል ረሱ? (Forgot Password)</span>
+    </div>
+
+    <!-- FORGOT PASSWORD: STEP 1 of 3 — request a code by username/email -->
+    <div class="login-card" id="forgot-card" style="display:none;">
+        <span class="step-hint">ደረጃ 1/3</span>
+        <h2>የይለፍ ቃል መቀየሪያ ኮድ ይጠይቁ</h2>
+        <p style="color: #666; margin-bottom: 15px; font-size: 0.9rem;">Username ወይም Email ያስገቡ፣ የማረጋገጫ ኮድ ወደ የተመዘገበው ኢሜይል ይላካል።</p>
+
+        <form id="forgot-form">
+            <input type="text" id="forgot-identifier" placeholder="Username ወይም Email" required>
+            <button type="submit" class="btn-login">ኮድ ላክ (Send Code)</button>
+        </form>
+
+        <p class="error-msg" id="forgot-error-message"></p>
+        <p class="success-msg" id="forgot-success-message"></p>
+
+        <span class="switch-link" onclick="showLogin()">ወደ መግቢያ ተመለስ (Back to Login)</span>
+    </div>
+
+    <!-- FORGOT PASSWORD: STEP 2 of 3 — enter the 6-digit emailed code, verified
+         on its own before moving on, so a wrong code is caught immediately
+         instead of only after also typing a new password. -->
+    <div class="login-card" id="reset-code-card" style="display:none;">
+        <span class="step-hint">ደረጃ 2/3</span>
+        <h2>ኮዱን ያስገቡ</h2>
+        <p style="color: #666; margin-bottom: 6px; font-size: 0.9rem;">ወደ <strong id="reset-code-target"></strong> የተላከውን 6-አሃዝ ኮድ ያስገቡ።</p>
+
+        <form id="reset-code-form">
+            <div class="otp-boxes">
+                <input type="text" class="otp-box" inputmode="numeric" maxlength="1" autocomplete="one-time-code" data-idx="0">
+                <input type="text" class="otp-box" inputmode="numeric" maxlength="1" data-idx="1">
+                <input type="text" class="otp-box" inputmode="numeric" maxlength="1" data-idx="2">
+                <input type="text" class="otp-box" inputmode="numeric" maxlength="1" data-idx="3">
+                <input type="text" class="otp-box" inputmode="numeric" maxlength="1" data-idx="4">
+                <input type="text" class="otp-box" inputmode="numeric" maxlength="1" data-idx="5">
+            </div>
+            <button type="submit" class="btn-login">ኮዱን አረጋግጥ (Verify Code)</button>
+        </form>
+
+        <p class="error-msg" id="reset-code-error-message"></p>
+        <p class="success-msg" id="reset-code-success-message"></p>
+
+        <span class="switch-link" onclick="resendResetCode()">ኮድ አልደረሰኝም፣ እንደገና ላክ (Resend)</span>
+        <span class="switch-link" onclick="showLogin()">ወደ መግቢያ ተመለስ (Back to Login)</span>
+    </div>
+
+    <!-- FORGOT PASSWORD: STEP 3 of 3 — the code is already verified at this
+         point, so this step only ever collects the new password. -->
+    <div class="login-card" id="reset-newpass-card" style="display:none;">
+        <span class="step-hint">ደረጃ 3/3</span>
+        <h2>አዲስ የይለፍ ቃል ያስገቡ</h2>
+        <p style="color: #666; margin-bottom: 15px; font-size: 0.9rem;">ኮዱ ተረጋግጧል። አዲሱን የይለፍ ቃል ሁለት ጊዜ ያስገቡ።</p>
+
+        <form id="reset-newpass-form">
+            <input type="password" id="reset-new-password" placeholder="አዲስ የይለፍ ቃል" required minlength="4">
+            <input type="password" id="reset-confirm-password" placeholder="አዲስ የይለፍ ቃል ያረጋግጡ" required minlength="4">
+            <button type="submit" class="btn-login">የይለፍ ቃል ቀይር (Reset Password)</button>
+        </form>
+
+        <p class="error-msg" id="reset-newpass-error-message"></p>
+        <p class="success-msg" id="reset-newpass-success-message"></p>
+
+        <span class="switch-link" onclick="showLogin()">ወደ መግቢያ ተመለስ (Back to Login)</span>
+    </div>
+
+    <!-- SIGN UP CARD -->
+    <div class="login-card" id="signup-card" style="display:none;">
+        <h2>አዲስ መለያ ይክፈቱ</h2>
+        <p style="color: #666; margin-bottom: 15px; font-size: 0.9rem;">ከምዝገባ በኋላ አድሚን እስኪያፀድቅ ድረስ መጠበቅ ያስፈልጋል።</p>
+
+        <form id="signup-form">
+            <input type="text" id="su-fullname" placeholder="ሙሉ ስም" required>
+            <input type="email" id="su-email" placeholder="Email" required>
+            <input type="text" id="su-username" placeholder="Username" required>
+            <input type="password" id="su-password" placeholder="Password" required>
+            <button type="submit" class="btn-login">መለያ ክፈት (Register)</button>
+        </form>
+
+        <p class="error-msg" id="signup-error-message"></p>
+        <p class="success-msg" id="signup-success-message"></p>
+
+        <span class="switch-link" onclick="showLogin()">መለያ አለኝ? ይግቡ (Back to Login)</span>
+    </div>
+
+    <script>
+        // One place that hides every card before showing the requested one,
+        // so a later step can only ever be reached by actually completing the
+        // one before it (never left visible by accident).
+        let resetIdentifier = '';  // carried from step 1 into steps 2 and 3
+        let resetVerifiedCode = ''; // carried from step 2 into step 3
+        const ALL_CARDS = ['login-card', 'signup-card', 'forgot-card', 'reset-code-card', 'reset-newpass-card'];
+        function hideAllCards() {
+            ALL_CARDS.forEach(id => { document.getElementById(id).style.display = 'none'; });
+        }
+        function showSignup() {
+            hideAllCards();
+            document.getElementById('signup-card').style.display = 'block';
+        }
+        function showLogin() {
+            hideAllCards();
+            document.getElementById('login-card').style.display = 'block';
+        }
+        function showForgot() {
+            hideAllCards();
+            document.getElementById('forgot-card').style.display = 'block';
+            document.getElementById('forgot-identifier').value = resetIdentifier;
+        }
+        // Moves to step 2 (the 6-box code entry) and focuses the first box.
+        function showResetCodeStep() {
+            hideAllCards();
+            document.getElementById('reset-code-target').innerText = resetIdentifier;
+            document.getElementById('reset-code-card').style.display = 'block';
+            clearOtpBoxes();
+            let first = document.querySelector('.otp-box[data-idx="0"]');
+            if (first) first.focus();
+        }
+        // Moves to step 3 (new password) — only ever reached once step 2 has
+        // confirmed the code is genuinely correct.
+        function showResetNewPasswordStep() {
+            hideAllCards();
+            document.getElementById('reset-newpass-card').style.display = 'block';
+            document.getElementById('reset-newpass-form').reset();
+        }
+
+        // ===== 6-box OTP input =====
+        // Typing a digit auto-advances to the next box; Backspace on an empty
+        // box moves back to the previous one; pasting a full 6-digit code
+        // anywhere fills every box at once. readOtpBoxes() reassembles them
+        // into a single string for the API call.
+        function otpBoxes() { return Array.from(document.querySelectorAll('.otp-box')); }
+        function readOtpBoxes() { return otpBoxes().map(b => b.value).join(''); }
+        function clearOtpBoxes() { otpBoxes().forEach(b => b.value = ''); }
+        otpBoxes().forEach((box, i) => {
+            box.addEventListener('input', () => {
+                box.value = box.value.replace(/[^0-9]/g, '').slice(0, 1);
+                if (box.value && i < otpBoxes().length - 1) otpBoxes()[i + 1].focus();
+            });
+            box.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && !box.value && i > 0) {
+                    otpBoxes()[i - 1].focus();
+                }
+            });
+            box.addEventListener('paste', (e) => {
+                let text = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '');
+                if (!text) return;
+                e.preventDefault();
+                let boxes = otpBoxes();
+                for (let j = 0; j < boxes.length; j++) boxes[j].value = text[j] || '';
+                let nextEmpty = boxes.find(b => !b.value) || boxes[boxes.length - 1];
+                nextEmpty.focus();
+            });
+        });
+
+        document.getElementById('login-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+            const errorMsg = document.getElementById('error-message');
+            errorMsg.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/users/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    sessionStorage.setItem("user", JSON.stringify(data));
+                    sessionStorage.setItem("authToken", data.token || "");
+                    window.location.href = "index.html";
+                } else {
+                    errorMsg.innerText = data.error || "የተሳሳተ Username ወይም Password!";
+                    errorMsg.style.display = 'block';
+                }
+            } catch (err) {
+                errorMsg.innerText = "ከሰርቨር ጋር መገናኘት አልተቻለም!";
+                errorMsg.style.display = 'block';
+            }
+        });
+
+        // Public self sign-up: creates the account as "pending" — it becomes usable
+        // only after an Admin approves it from the Users section of the dashboard.
+        document.getElementById('signup-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const fullName = document.getElementById('su-fullname').value.trim();
+            const email = document.getElementById('su-email').value.trim();
+            const username = document.getElementById('su-username').value.trim();
+            const password = document.getElementById('su-password').value;
+            const errorMsg = document.getElementById('signup-error-message');
+            const successMsg = document.getElementById('signup-success-message');
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/users/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fullName, email, username, password, role: 'Employee' })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    successMsg.innerText = "ምዝገባዎ በተሳካ ሁኔታ ተልኳል! አድሚን እስኪያፀድቅልዎ ድረስ እባክዎ ይጠብቁ።";
+                    successMsg.style.display = 'block';
+                    document.getElementById('signup-form').reset();
+                    setTimeout(showLogin, 3000);
+                } else {
+                    errorMsg.innerText = data.error || "ምዝገባ አልተሳካም!";
+                    errorMsg.style.display = 'block';
+                }
+            } catch (err) {
+                errorMsg.innerText = "ከሰርቨር ጋር መገናኘት አልተቻለም!";
+                errorMsg.style.display = 'block';
+            }
+        });
+
+        // Step 1: request the code. The response message is intentionally the
+        // same whether or not the account exists — so a mistyped username
+        // doesn't accidentally reveal which usernames/emails are registered.
+        document.getElementById('forgot-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const identifier = document.getElementById('forgot-identifier').value.trim();
+            const errorMsg = document.getElementById('forgot-error-message');
+            const successMsg = document.getElementById('forgot-success-message');
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/users/forgot-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ identifier })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    resetIdentifier = identifier;
+                    // Move to the code-entry step right away — the confirmation
+                    // that a code was sent is shown there, not delayed here.
+                    showResetCodeStep();
+                    let codeSuccessMsg = document.getElementById('reset-code-success-message');
+                    codeSuccessMsg.innerText = data.message || "ኮድ ተልኳል";
+                    codeSuccessMsg.style.display = 'block';
+                } else {
+                    errorMsg.innerText = data.error || "ጥያቄውን ማስኬድ አልተቻለም";
+                    errorMsg.style.display = 'block';
+                }
+            } catch (err) {
+                errorMsg.innerText = "ከሰርቨር ጋር መገናኘት አልተቻለም!";
+                errorMsg.style.display = 'block';
+            }
+        });
+
+        // Resend from step 2: request a fresh code for the same identifier and
+        // show the confirmation right there, in place, without navigating away
+        // or losing the step the person is already on.
+        async function resendResetCode() {
+            const errorMsg = document.getElementById('reset-code-error-message');
+            const successMsg = document.getElementById('reset-code-success-message');
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+            clearOtpBoxes();
+            try {
+                const res = await fetch('/api/users/forgot-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ identifier: resetIdentifier })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    successMsg.innerText = data.message || "ኮድ እንደገና ተልኳል";
+                    successMsg.style.display = 'block';
+                    let first = document.querySelector('.otp-box[data-idx="0"]');
+                    if (first) first.focus();
+                } else {
+                    errorMsg.innerText = data.error || "ጥያቄውን ማስኬድ አልተቻለም";
+                    errorMsg.style.display = 'block';
+                }
+            } catch (err) {
+                errorMsg.innerText = "ከሰርቨር ጋር መገናኘት አልተቻለም!";
+                errorMsg.style.display = 'block';
+            }
+        }
+
+        // Step 2: verify the 6-digit code on its own — a wrong code is caught
+        // right here, before the person has typed any new password at all.
+        document.getElementById('reset-code-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const code = readOtpBoxes();
+            const errorMsg = document.getElementById('reset-code-error-message');
+            const successMsg = document.getElementById('reset-code-success-message');
+            errorMsg.style.display = 'none';
+
+            if (code.length !== 6) {
+                errorMsg.innerText = "እባክዎ ሙሉውን 6-አሃዝ ኮድ ያስገቡ";
+                errorMsg.style.display = 'block';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/users/verify-reset-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ identifier: resetIdentifier, code })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    resetVerifiedCode = code;
+                    showResetNewPasswordStep();
+                } else {
+                    errorMsg.innerText = data.error || "ልክ ያልሆነ ኮድ";
+                    errorMsg.style.display = 'block';
+                    successMsg.style.display = 'none';
+                    clearOtpBoxes();
+                    let first = document.querySelector('.otp-box[data-idx="0"]');
+                    if (first) first.focus();
+                }
+            } catch (err) {
+                errorMsg.innerText = "ከሰርቨር ጋር መገናኘት አልተቻለም!";
+                errorMsg.style.display = 'block';
+            }
+        });
+
+        // Step 3: the code is already verified — this only ever sets the new
+        // password (re-checked, and consumed, by the server for safety).
+        document.getElementById('reset-newpass-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const newPassword = document.getElementById('reset-new-password').value;
+            const confirmPassword = document.getElementById('reset-confirm-password').value;
+            const errorMsg = document.getElementById('reset-newpass-error-message');
+            const successMsg = document.getElementById('reset-newpass-success-message');
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+
+            if (newPassword !== confirmPassword) {
+                errorMsg.innerText = "ሁለቱ የይለፍ ቃሎች አንድ አይነት አይደሉም";
+                errorMsg.style.display = 'block';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/users/reset-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ identifier: resetIdentifier, code: resetVerifiedCode, newPassword })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    successMsg.innerText = data.message || "የይለፍ ቃልዎ ተቀይሯል!";
+                    successMsg.style.display = 'block';
+                    document.getElementById('reset-newpass-form').reset();
+                    setTimeout(showLogin, 2000);
+                } else {
+                    // The verified code may have expired in the meantime — send
+                    // them back to request a fresh one rather than getting stuck.
+                    errorMsg.innerText = data.error || "የይለፍ ቃል መቀየር አልተቻለም";
+                    errorMsg.style.display = 'block';
+                }
+            } catch (err) {
+                errorMsg.innerText = "ከሰርቨር ጋር መገናኘት አልተቻለም!";
+                errorMsg.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
