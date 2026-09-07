@@ -1107,3 +1107,50 @@ body {
         display: none; /* profile button keeps just the icon/chevron */
     }
 }
+
+/* ================================================== */
+/* Larger, better-proportioned layout on desktop/large screens */
+/* ================================================== */
+@media (min-width: 1200px) {
+    .content {
+        padding: 32px 40px;
+    }
+    .cards-grid {
+        gap: 18px;
+        margin-bottom: 18px;
+    }
+    .card {
+        padding: 18px 24px;
+    }
+    .card h3 {
+        font-size: 14px;
+    }
+    .card .count {
+        font-size: 1.8rem;
+    }
+    .charts-grid {
+        gap: 18px;
+        margin-bottom: 18px;
+    }
+    .chart-card {
+        padding: 16px 20px;
+    }
+    .chart-card h3 {
+        font-size: 14px;
+        margin-bottom: 10px;
+    }
+    .chart-canvas-wrap {
+        height: 180px;
+    }
+    .form-section, .table-section {
+        padding: 30px;
+    }
+    .data-table th, .data-table td {
+        padding: 14px 16px;
+        font-size: 14px;
+    }
+    .sidebar li {
+        padding: 16px 22px;
+        font-size: 14.5px;
+    }
+}
