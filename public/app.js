@@ -1696,20 +1696,106 @@ async function restoreData(event) {
     reader.readAsText(file);
 }
 
-function exportToExcel(cat) {
-    let filtered = records.filter(r => r.category === cat);
-    let ws = XLSX.utils.json_to_sheet(filtered);
-    let wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, cat);
-    XLSX.writeFile(wb, `${cat}_report.xlsx`);
+// Both exports below work off the same clean row shape (name/amount/dates +
+// who prepared/approved it) instead of dumping the raw database document —
+// that's what used to spill internal fields like _id, __v, isDeleted into
+// the spreadsheet with no useful structure.
+function buildExportRows(cat) {
+    return records
+        .filter(r => r.category === cat)
+        .map((r, idx) => ({
+            no: idx + 1,
+            name: r.name || '',
+            amount: Number(r.amount || 0),
+            paymentDate: r.paymentDate || '',
+            startDate: r.startDate || '',
+            dueDate: r.dueDate || '',
+            preparedBy: (r.preparedBy && r.preparedBy.fullName) || '',
+            approvedBy: (r.approvedBy && r.approvedBy.fullName) || ''
+        }));
 }
 
-function exportToPDF(id) {
-    html2canvas(document.getElementById(id)).then(canvas => {
+function exportToExcel(cat) {
+    let rows = buildExportRows(cat);
+    let sheetTitle = cat === 'ክፍያ' ? 'ክፍያዎች' : 'ውሎች';
+
+    let exportData = rows.map(r => ({
+        'ተ.ቁ': r.no,
+        'መግለጫ': r.name,
+        'መጠን (ብር)': r.amount,
+        'ክፍያ/ውል የተፈጸመበት ቀን': r.paymentDate,
+        'መጀመሪያ ቀን': r.startDate,
+        'የማብቂያ/ቀጣይ ቀን': r.dueDate,
+        'ያዘጋጀው': r.preparedBy,
+        'ያጸደቀው': r.approvedBy
+    }));
+
+    let ws = XLSX.utils.json_to_sheet(exportData);
+    ws['!cols'] = [{ wch: 6 }, { wch: 36 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 20 }, { wch: 20 }];
+
+    let wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, sheetTitle);
+    XLSX.writeFile(wb, `${sheetTitle}_ሪፖርት_${new Date().toISOString().split('T')[0]}.xlsx`);
+}
+
+// Renders a clean, light-themed, printable table off-screen (instead of
+// screenshotting the actual dark app UI, which is why the old PDF looked
+// like a messy raw screenshot) and turns THAT into the PDF. Built as real
+// DOM/text — not html2canvas of the live page — so Amharic still renders
+// correctly (the browser's own font handles the Ethiopic script), but the
+// output looks like an actual formatted report.
+function exportToPDF(cat) {
+    let rows = buildExportRows(cat);
+    let title = cat === 'ክፍያ' ? 'የክፍያ ሪፖርት' : 'የውል ሪፖርት';
+    let total = rows.reduce((sum, r) => sum + r.amount, 0);
+
+    let wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed; left:-9999px; top:0; width:900px; background:#ffffff; color:#1a202c; padding:28px; font-family: "Segoe UI", Arial, sans-serif;';
+
+    let bodyRows = rows.map(r => `
+        <tr>
+            <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.no}</td>
+            <td style="border:1px solid #cbd5e0; padding:7px;">${r.name}</td>
+            <td style="border:1px solid #cbd5e0; padding:7px; text-align:right;">${r.amount.toLocaleString('en-US')}</td>
+            <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.paymentDate}</td>
+            <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.startDate}</td>
+            <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.dueDate}</td>
+        </tr>`).join('');
+
+    wrap.innerHTML = `
+        <div style="text-align:center; margin-bottom:18px; border-bottom:2px solid #2b6cb0; padding-bottom:12px;">
+            <h2 style="margin:0; color:#1a365d;">Fountain International Trading PLC</h2>
+            <p style="margin:4px 0 0; color:#4a5568;">${title}</p>
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+                <tr style="background:#2b6cb0; color:#ffffff;">
+                    <th style="border:1px solid #cbd5e0; padding:7px;">ተ.ቁ</th>
+                    <th style="border:1px solid #cbd5e0; padding:7px;">መግለጫ</th>
+                    <th style="border:1px solid #cbd5e0; padding:7px;">መጠን (ብር)</th>
+                    <th style="border:1px solid #cbd5e0; padding:7px;">ክፍያ/ውል ቀን</th>
+                    <th style="border:1px solid #cbd5e0; padding:7px;">መጀመሪያ ቀን</th>
+                    <th style="border:1px solid #cbd5e0; padding:7px;">የማብቂያ ቀን</th>
+                </tr>
+            </thead>
+            <tbody>${bodyRows || '<tr><td colspan="6" style="text-align:center; padding:16px; color:#718096;">ምንም መረጃ አልተገኘም</td></tr>'}</tbody>
+        </table>
+        <p style="text-align:right; margin-top:16px; font-weight:bold; font-size:15px; color:#1a365d;">አጠቃላይ ድምር: ${total.toLocaleString('en-US')} ብር</p>
+        <p style="text-align:right; margin-top:4px; font-size:11px; color:#a0aec0;">ተዘጋጅቷል፡ ${new Date().toLocaleDateString('en-GB')}</p>
+    `;
+    document.body.appendChild(wrap);
+
+    html2canvas(wrap, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
+        document.body.removeChild(wrap);
         const { jsPDF } = window.jspdf;
         let pdf = new jsPDF('p', 'mm', 'a4');
-        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), (canvas.height * pdf.internal.pageSize.getWidth()) / canvas.width);
-        pdf.save('report.pdf');
+        let pageWidth = pdf.internal.pageSize.getWidth();
+        let imgHeight = (canvas.height * pageWidth) / canvas.width;
+        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pageWidth, imgHeight);
+        pdf.save(`${title}_${new Date().toISOString().split('T')[0]}.pdf`);
+    }).catch(() => {
+        if (wrap.parentNode) document.body.removeChild(wrap);
+        alert('PDF ማዘጋጀት አልተቻለም');
     });
 }
 
