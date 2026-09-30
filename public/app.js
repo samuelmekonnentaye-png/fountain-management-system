@@ -92,6 +92,11 @@ document.addEventListener("DOMContentLoaded", () => {
         let restoreNote = document.getElementById('restore-admin-note');
         if (restoreBlock) restoreBlock.style.display = 'block';
         if (restoreNote) restoreNote.style.display = 'none';
+
+        let fleetTrashBtnWrap = document.getElementById('fleet-vehicle-trash-btn-wrap');
+        if (fleetTrashBtnWrap) fleetTrashBtnWrap.style.display = 'block';
+        let fuelPriceBox = document.getElementById('fleet-fuel-price-box');
+        if (fuelPriceBox) fuelPriceBox.style.display = 'block';
     }
 
     fetchRecords();
@@ -326,6 +331,10 @@ function showSection(sectionId, menuId) {
     if (sectionId === 'contracts-sec') resetRecordFormMode('con');
     if (sectionId === 'signature-sec') loadMySignatureStatus();
     if (sectionId === 'trash-sec') fetchTrash();
+    if (sectionId === 'fleet-vehicles-sec') { fetchVehicles(); resetVehicleForm(); }
+    if (sectionId === 'fleet-trips-sec') { fetchVehicles(); fetchTripLogs(); loadFleetDepartments(); loadFuelPriceSettings(); }
+    if (sectionId === 'fleet-maintenance-sec') { fetchVehicles(); fetchMaintenanceList(); }
+    if (sectionId === 'fleet-fuel-sec') { fetchVehicles(); fetchFuelLogs(); }
     // Chart.js needs a visible (non-zero-size) canvas to size itself
     // correctly, so redraw the dashboard charts right after it becomes visible.
     if (sectionId === 'dashboard-sec') renderDashboardCharts();
@@ -1075,8 +1084,8 @@ function renderReceiptSignatures(record) {
 // list of people who can be sent this record to approve, and requires one
 // to be picked before the signature password field is even usable.
 let pendingSignContext = null;
-async function promptAndSign(recordId, slot) {
-    pendingSignContext = { recordId, slot };
+async function promptAndSign(recordId, slot, kind = 'record') {
+    pendingSignContext = { recordId, slot, kind };
     let input = document.getElementById('sign-password-input');
     if (input) input.value = '';
     let errorBox = document.getElementById('sign-password-error');
@@ -1118,7 +1127,7 @@ async function submitSignPassword(e) {
     e.preventDefault();
     if (!pendingSignContext) return;
     let signaturePassword = document.getElementById('sign-password-input').value;
-    let { recordId, slot } = pendingSignContext;
+    let { recordId, slot, kind } = pendingSignContext;
     let errorBox = document.getElementById('sign-password-error');
     let submitBtn = document.getElementById('sign-password-submit-btn');
     if (errorBox) { errorBox.style.display = 'none'; errorBox.innerHTML = ''; }
@@ -1138,7 +1147,8 @@ async function submitSignPassword(e) {
 
     if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> በማስኬድ ላይ...'; }
     try {
-        let res = await authFetch(`/api/records/${recordId}/sign`, {
+        let endpoint = kind === 'maintenance' ? `/api/fleet/maintenance/${recordId}/sign` : `/api/records/${recordId}/sign`;
+        let res = await authFetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -1146,13 +1156,20 @@ async function submitSignPassword(e) {
         let data = await res.json();
         if (res.ok) {
             closeSignPasswordModal();
-            // Update the local copy so the receipt reflects it immediately,
-            // and refresh from the server so the record list stays in sync.
-            let idx = records.findIndex(r => r._id === recordId);
-            if (idx !== -1) records[idx] = data;
-            renderReceiptSignatures(data);
-            fetchRecords();
-            fetchApprovalNotifications();
+            if (kind === 'maintenance') {
+                let idx = fleetMaintenance.findIndex(r => r._id === recordId);
+                if (idx !== -1) fleetMaintenance[idx] = data;
+                renderMaintenanceList();
+                fetchApprovalNotifications();
+            } else {
+                // Update the local copy so the receipt reflects it immediately,
+                // and refresh from the server so the record list stays in sync.
+                let idx = records.findIndex(r => r._id === recordId);
+                if (idx !== -1) records[idx] = data;
+                renderReceiptSignatures(data);
+                fetchRecords();
+                fetchApprovalNotifications();
+            }
         } else {
             // Shown inline (not a dismissible alert) so it can't be missed or
             // accidentally clicked away — the modal stays open to retry.
@@ -1408,11 +1425,16 @@ async function markApprovalNotificationRead(notifId, event) {
     approvalNotifications = approvalNotifications.map(n => n._id === notifId ? { ...n, read: true } : n);
     checkAndTriggerNotifications();
 }
-function handleApprovalNotificationClick(notifId, recordId) {
+function handleApprovalNotificationClick(notifId, recordId, module) {
     markApprovalNotificationRead(notifId);
     let notifDropdown = document.getElementById('notif-dropdown');
     if (notifDropdown) notifDropdown.classList.remove('show');
-    previewReceipt(recordId);
+    if (module === 'fleet_maintenance') {
+        showSection('fleet-maintenance-sec', 'menu-fleet-maintenance');
+        fetchMaintenanceList();
+    } else {
+        previewReceipt(recordId);
+    }
 }
 
 function checkAndTriggerNotifications() {
@@ -1448,7 +1470,7 @@ function checkAndTriggerNotifications() {
             unreadApprovals.forEach(n => {
                 let icon = n.type === 'approved' ? '✅' : '✍️';
                 notifList.innerHTML += `
-                    <div class="notif-item" onclick="handleApprovalNotificationClick('${n._id}', '${n.recordId}')" style="cursor: pointer; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); position: relative;">
+                    <div class="notif-item" onclick="handleApprovalNotificationClick('${n._id}', '${n.recordId}', '${n.module || 'record'}')" style="cursor: pointer; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); position: relative;">
                         <span onclick="markApprovalNotificationRead('${n._id}', event)" title="እንደተነበበ ምልክት አድርግ" style="position: absolute; top: 6px; right: 6px; cursor: pointer; color: #a0aec0; font-weight: bold; padding: 2px 6px;">&times;</span>
                         <div style="padding-right: 20px;">
                             ${icon} <span style="font-size: 12px;">${n.message}</span>
@@ -1822,5 +1844,497 @@ window.onclick = function(event) {
     if (!event.target.closest('.notification-wrapper')) {
         let notifDropdown = document.getElementById("notif-dropdown");
         if (notifDropdown) notifDropdown.classList.remove("show");
+    }
+}
+
+// ==========================================
+// FLEET MANAGEMENT (ፍሊት ማኔጅመንት)
+// ==========================================
+let fleetVehicles = [];
+let fleetTrips = [];
+let fleetDepartments = [];
+let fleetSettings = { dieselPricePerLiter: 0, benzinePricePerLiter: 0 };
+let editingVehicleId = null;
+
+// ---------- Vehicles ----------
+async function fetchVehicles() {
+    try {
+        const res = await authFetch('/api/fleet/vehicles');
+        fleetVehicles = await res.json();
+        renderVehicleList();
+        populateTripVehicleSelect();
+        populateMaintenanceVehicleSelects();
+    } catch (err) {
+        console.log('ተሽከርካሪዎችን ማምጣት አልተቻለም');
+    }
+}
+
+// A document is 🔴 overdue, 🟡 due within 10 days, or 🟢 fine — same
+// thresholds as the payment/contract reminder logic elsewhere in this app.
+// Returns the worst status across all 4 documents plus which one caused it.
+function getVehicleDocStatus(vehicle) {
+    const labels = { libre: 'ሊብሬ', bolo: 'ቦሎ', insurance: 'መድን', competency: 'ብቃት ማረጋገጫ' };
+    const today = new Date(); today.setHours(0,0,0,0);
+    let worst = { level: 2, text: '🟢 ሁሉም ሰነዶች ዝማኔ ናቸው' }; // 0=red,1=yellow,2=green
+    const docs = vehicle.documents || {};
+    Object.keys(labels).forEach(key => {
+        const d = docs[key];
+        if (!d || !d.expiryDate) return;
+        const expiry = new Date(d.expiryDate); expiry.setHours(0,0,0,0);
+        const diffDays = Math.ceil((expiry - today) / (1000*60*60*24));
+        let level, text;
+        if (diffDays < 0) { level = 0; text = `🔴 ${labels[key]} ካለፈ ${Math.abs(diffDays)} ቀን`; }
+        else if (diffDays <= 10) { level = 1; text = `🟡 ${labels[key]} ${diffDays} ቀን ቀርቶታል`; }
+        else { level = 2; text = ''; }
+        if (level < worst.level) worst = { level, text };
+    });
+    return worst;
+}
+
+function renderVehicleList() {
+    const tbody = document.getElementById('veh-data-list');
+    if (!tbody) return;
+    if (!fleetVehicles.length) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#a0aec0;">ምንም ተሽከርካሪ አልተመዘገበም</td></tr>`;
+        return;
+    }
+    const statusLabels = { active: '🟢 አገልግሎት ላይ', maintenance: '🟡 ጥገና ላይ', out_of_service: '🔴 ከአገልግሎት ውጪ' };
+    tbody.innerHTML = fleetVehicles.map(v => {
+        const docStatus = getVehicleDocStatus(v);
+        return `
+            <tr>
+                <td>${v.plateNumber}</td>
+                <td>${v.vehicleType}${v.model ? ' / ' + v.model : ''}</td>
+                <td>${v.driverName || '-'}</td>
+                <td>${(v.currentKm || 0).toLocaleString('en-US')}</td>
+                <td>${statusLabels[v.status] || v.status}</td>
+                <td>${docStatus.text || '🟢 ችግር የለም'}</td>
+                <td class="no-print">
+                    <button onclick="editVehicle('${v._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px;" title="አርም"><i class="fas fa-edit"></i></button>
+                    <button onclick="deleteVehicle('${v._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>`;
+    }).join('');
+}
+
+function resetVehicleForm() {
+    editingVehicleId = null;
+    document.getElementById('vehicle-form').reset();
+    document.getElementById('veh-edit-id').value = '';
+    document.getElementById('veh-form-title').innerHTML = '<i class="fas fa-plus-circle"></i> አዲስ ተሽከርካሪ መዝግብ';
+    document.getElementById('veh-btn-submit').innerHTML = '<i class="fas fa-save"></i> ተሽከርካሪ መዝግብ';
+    document.getElementById('veh-btn-cancel').style.display = 'none';
+}
+
+function editVehicle(id) {
+    const v = fleetVehicles.find(x => x._id === id);
+    if (!v) return;
+    editingVehicleId = id;
+    document.getElementById('veh-edit-id').value = id;
+    document.getElementById('veh-plate').value = v.plateNumber || '';
+    document.getElementById('veh-type').value = v.vehicleType || '';
+    document.getElementById('veh-model').value = v.model || '';
+    document.getElementById('veh-chassis').value = v.chassisNumber || '';
+    document.getElementById('veh-driver').value = v.driverName || '';
+    setAmountValue('veh-current-km', v.currentKm || 0);
+    document.getElementById('veh-status').value = v.status || 'active';
+    document.getElementById('veh-fuel-type').value = v.fuelType || 'ናፍጣ';
+    setAmountValue('veh-km-per-liter', v.kmPerLiter || '');
+    const docs = v.documents || {};
+    document.getElementById('veh-doc-libre-expiry').value = (docs.libre && docs.libre.expiryDate) || '';
+    document.getElementById('veh-doc-bolo-expiry').value = (docs.bolo && docs.bolo.expiryDate) || '';
+    document.getElementById('veh-doc-insurance-expiry').value = (docs.insurance && docs.insurance.expiryDate) || '';
+    document.getElementById('veh-doc-competency-expiry').value = (docs.competency && docs.competency.expiryDate) || '';
+
+    document.getElementById('veh-form-title').innerHTML = '<i class="fas fa-edit"></i> ተሽከርካሪ አርም';
+    document.getElementById('veh-btn-submit').innerHTML = '<i class="fas fa-save"></i> ለውጥ አስቀምጥ';
+    document.getElementById('veh-btn-cancel').style.display = 'inline-flex';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function handleVehicleSubmit(e) {
+    e.preventDefault();
+    const fd = new FormData();
+    fd.append('plateNumber', document.getElementById('veh-plate').value.trim());
+    fd.append('vehicleType', document.getElementById('veh-type').value.trim());
+    fd.append('model', document.getElementById('veh-model').value.trim());
+    fd.append('chassisNumber', document.getElementById('veh-chassis').value.trim());
+    fd.append('driverName', document.getElementById('veh-driver').value.trim());
+    fd.append('currentKm', getAmountValue('veh-current-km') || 0);
+    fd.append('status', document.getElementById('veh-status').value);
+    fd.append('fuelType', document.getElementById('veh-fuel-type').value);
+    fd.append('kmPerLiter', getAmountValue('veh-km-per-liter') || 0);
+    fd.append('documents', JSON.stringify({
+        libre: { expiryDate: document.getElementById('veh-doc-libre-expiry').value },
+        bolo: { expiryDate: document.getElementById('veh-doc-bolo-expiry').value },
+        insurance: { expiryDate: document.getElementById('veh-doc-insurance-expiry').value },
+        competency: { expiryDate: document.getElementById('veh-doc-competency-expiry').value }
+    }));
+    const photoFile = document.getElementById('veh-photo').files[0];
+    if (photoFile) fd.append('photo', photoFile);
+
+    try {
+        const url = editingVehicleId ? `/api/fleet/vehicles/${editingVehicleId}` : '/api/fleet/vehicles';
+        const method = editingVehicleId ? 'PUT' : 'POST';
+        const res = await authFetch(url, { method, body: fd });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        resetVehicleForm();
+        fetchVehicles();
+    } catch (err) {
+        alert('መመዝገብ አልተቻለም');
+    }
+}
+
+async function deleteVehicle(id) {
+    if (!confirm('ይህን ተሽከርካሪ ወደ ትራሽ መላክ ይፈልጋሉ?')) return;
+    try {
+        await authFetch(`/api/fleet/vehicles/${id}`, { method: 'DELETE' });
+        fetchVehicles();
+    } catch (err) {
+        alert('ማጥፋት አልተቻለም');
+    }
+}
+
+let vehicleTrashOpen = false;
+async function toggleVehicleTrash() {
+    const box = document.getElementById('fleet-vehicle-trash-list');
+    vehicleTrashOpen = !vehicleTrashOpen;
+    if (!vehicleTrashOpen) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    box.innerHTML = 'በመጫን ላይ...';
+    try {
+        const res = await authFetch('/api/fleet/vehicles/trash/list');
+        const list = await res.json();
+        if (!list.length) { box.innerHTML = '<p style="color:#a0aec0;">ትራሹ ባዶ ነው</p>'; return; }
+        box.innerHTML = `<table class="data-table"><thead><tr><th>ሰሌዳ ቁጥር</th><th>አይነት</th><th>የተሰረዘበት ጊዜ</th><th>እርምጃ</th></tr></thead><tbody>
+            ${list.map(v => `<tr><td>${v.plateNumber}</td><td>${v.vehicleType}</td><td>${v.deletedAt ? new Date(v.deletedAt).toLocaleDateString('en-GB') : '-'}</td>
+                <td><button onclick="restoreVehicle('${v._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px;"><i class="fas fa-undo"></i> መልስ</button></td></tr>`).join('')}
+            </tbody></table>`;
+    } catch (err) {
+        box.innerHTML = '<p style="color:#e53e3e;">ማምጣት አልተቻለም</p>';
+    }
+}
+async function restoreVehicle(id) {
+    try {
+        await authFetch(`/api/fleet/vehicles/${id}/restore`, { method: 'POST' });
+        vehicleTrashOpen = false;
+        toggleVehicleTrash();
+        fetchVehicles();
+    } catch (err) {
+        alert('መመለስ አልተቻለም');
+    }
+}
+
+// ---------- Fuel price settings ----------
+async function loadFuelPriceSettings() {
+    try {
+        const res = await authFetch('/api/fleet/settings');
+        fleetSettings = await res.json();
+        setAmountValue('fuel-price-diesel', fleetSettings.dieselPricePerLiter || '');
+        setAmountValue('fuel-price-benzine', fleetSettings.benzinePricePerLiter || '');
+    } catch (err) {
+        console.log('ቅንብር ማምጣት አልተቻለም');
+    }
+}
+async function saveFuelPrices() {
+    try {
+        const res = await authFetch('/api/fleet/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                dieselPricePerLiter: getAmountValue('fuel-price-diesel') || 0,
+                benzinePricePerLiter: getAmountValue('fuel-price-benzine') || 0
+            })
+        });
+        fleetSettings = await res.json();
+        alert('ዋጋው ተቀምጧል');
+        updateTripEstimate();
+    } catch (err) {
+        alert('ማስቀመጥ አልተቻለም');
+    }
+}
+
+// ---------- Departments ----------
+async function loadFleetDepartments() {
+    try {
+        const res = await authFetch('/api/fleet/departments');
+        fleetDepartments = await res.json();
+        const select = document.getElementById('trip-department');
+        if (select) {
+            select.innerHTML = '<option value="">-- ይምረጡ --</option>' +
+                fleetDepartments.map(d => `<option value="${d}">${d}</option>`).join('');
+        }
+    } catch (err) {
+        console.log('ዲፓርትመንት ዝርዝር ማምጣት አልተቻለም');
+    }
+}
+
+// ---------- Trip log ----------
+function populateTripVehicleSelect() {
+    const select = document.getElementById('trip-vehicle');
+    if (!select) return;
+    const activeVehicles = fleetVehicles.filter(v => v.status !== 'out_of_service');
+    select.innerHTML = '<option value="">-- ይምረጡ --</option>' +
+        activeVehicles.map(v => `<option value="${v._id}">${v.plateNumber} - ${v.vehicleType}</option>`).join('');
+}
+
+// Live client-side preview only — the server always recomputes and is the
+// only value that actually gets saved, so a stale/manipulated preview here
+// can never affect what ends up in the report.
+function updateTripEstimate() {
+    const preview = document.getElementById('trip-estimate-preview');
+    if (!preview) return;
+    const vehicleId = document.getElementById('trip-vehicle').value;
+    const depKm = getAmountValue('trip-departure-km');
+    const retKm = getAmountValue('trip-return-km');
+    const vehicle = fleetVehicles.find(v => v._id === vehicleId);
+
+    if (!vehicle || isNaN(depKm) || isNaN(retKm)) { preview.textContent = ''; return; }
+    if (retKm < depKm) { preview.textContent = '⚠️ የተመለሰበት ኪሜ ከወጣበት ኪሜ ያንሳል'; return; }
+
+    const distance = retKm - depKm;
+    const pricePerLiter = vehicle.fuelType === 'ቤንዚን' ? (fleetSettings.benzinePricePerLiter || 0) : (fleetSettings.dieselPricePerLiter || 0);
+    const cost = vehicle.kmPerLiter > 0 ? Math.round(distance * (pricePerLiter / vehicle.kmPerLiter) * 100) / 100 : 0;
+    preview.textContent = `የተጓዘው ኪ.ሜ፡ ${distance.toLocaleString('en-US')} | የነዳጅ ወጪ ግምት፡ ${cost.toLocaleString('en-US')} ብር`;
+}
+
+async function fetchTripLogs() {
+    try {
+        const res = await authFetch('/api/fleet/trips');
+        fleetTrips = await res.json();
+        renderTripList();
+    } catch (err) {
+        console.log('የአጠቃቀም ምዝገባ ማምጣት አልተቻለም');
+    }
+}
+
+function renderTripList() {
+    const tbody = document.getElementById('trip-data-list');
+    if (!tbody) return;
+    if (!fleetTrips.length) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#a0aec0;">ምንም አልተመዘገበም</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = fleetTrips.map(t => `
+        <tr>
+            <td>${t.tripDate}</td>
+            <td>${t.department}</td>
+            <td>${t.destination || '*'}</td>
+            <td>${t.vehiclePlate} (${t.vehicleType})</td>
+            <td>${(t.departureKm||0).toLocaleString('en-US')} - ${(t.returnKm||0).toLocaleString('en-US')}</td>
+            <td>${(t.distanceKm||0).toLocaleString('en-US')}</td>
+            <td>${(t.estimatedFuelCost||0).toLocaleString('en-US')} ብር</td>
+            <td class="no-print"><button onclick="deleteTripLog('${t._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button></td>
+        </tr>`).join('');
+}
+
+async function handleTripSubmit(e) {
+    e.preventDefault();
+    const payload = {
+        department: document.getElementById('trip-department').value,
+        vehicleId: document.getElementById('trip-vehicle').value,
+        destination: document.getElementById('trip-destination').value.trim() || '*',
+        tripDate: document.getElementById('trip-date').value,
+        departureTime: document.getElementById('trip-departure-time').value,
+        departureKm: getAmountValue('trip-departure-km'),
+        returnKm: getAmountValue('trip-return-km')
+    };
+    try {
+        const res = await authFetch('/api/fleet/trips', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        document.getElementById('trip-form').reset();
+        document.getElementById('trip-estimate-preview').textContent = '';
+        fetchTripLogs();
+        fetchVehicles(); // odometer on the vehicle may have advanced
+    } catch (err) {
+        alert('መመዝገብ አልተቻለም');
+    }
+}
+
+async function deleteTripLog(id) {
+    if (!confirm('ይህን ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
+    try {
+        await authFetch(`/api/fleet/trips/${id}`, { method: 'DELETE' });
+        fetchTripLogs();
+    } catch (err) {
+        alert('ማጥፋት አልተቻለም');
+    }
+}
+
+// ---------- Maintenance (with approval workflow) ----------
+let fleetMaintenance = [];
+
+function populateMaintenanceVehicleSelects() {
+    const options = '<option value="">-- ይምረጡ --</option>' +
+        fleetVehicles.map(v => `<option value="${v._id}">${v.plateNumber} - ${v.vehicleType}</option>`).join('');
+    const maintSelect = document.getElementById('maint-vehicle');
+    if (maintSelect) maintSelect.innerHTML = options;
+    const fuelSelect = document.getElementById('fuel-vehicle');
+    if (fuelSelect) fuelSelect.innerHTML = options;
+}
+
+async function fetchMaintenanceList() {
+    try {
+        const res = await authFetch('/api/fleet/maintenance');
+        fleetMaintenance = await res.json();
+        renderMaintenanceList();
+    } catch (err) {
+        console.log('የጥገና ምዝገባ ማምጣት አልተቻለም');
+    }
+}
+
+// Renders the "አዘጋጀው"/"አጽዳቂ" cell for one maintenance row — the same
+// prepare→send→approve logic as the payment/contract receipt modal, just
+// shown inline in the table instead of in a separate modal.
+function maintenanceSignCellHtml(item, slot) {
+    const person = slot === 'prepared' ? item.preparedBy : item.approvedBy;
+    if (person && person.signatureImage) {
+        return `<span style="font-size:12px; color:#68d391;"><i class="fas fa-check-circle"></i> ${person.fullName}</span>`;
+    }
+    if (slot === 'prepared') {
+        return `<button class="btn-submit no-print" style="padding:5px 9px; font-size:11.5px;" onclick="promptAndSign('${item._id}', 'prepared', 'maintenance')"><i class="fas fa-signature"></i> ፈርም</button>`;
+    }
+    // approved slot
+    if (item.approval && item.approval.pendingApproverId) {
+        const isMyApproval = currentUser && (currentUser.id === item.approval.pendingApproverId || currentUser.role === 'Admin');
+        return isMyApproval
+            ? `<button class="btn-submit no-print" style="padding:5px 9px; font-size:11.5px;" onclick="promptAndSign('${item._id}', 'approved', 'maintenance')"><i class="fas fa-signature"></i> ፈርም</button>`
+            : `<span class="no-print" style="font-size:11px; color:#d69e2e;"><i class="fas fa-hourglass-half"></i> ${item.approval.pendingApproverName} እየጠበቀ</span>`;
+    }
+    if (currentUser && currentUser.role === 'Admin') {
+        return `<button class="btn-submit no-print" style="padding:5px 9px; font-size:11.5px;" onclick="promptAndSign('${item._id}', 'approved', 'maintenance')"><i class="fas fa-signature"></i> ፈርም (Admin)</button>`;
+    }
+    return `<span class="no-print" style="font-size:11px; color:#a0aec0;">ገና አልተላከም</span>`;
+}
+
+// Reuses the same currentUser.role check the payment/contract UI relies on
+// for the Admin-override path (permissions themselves aren't sent to the
+// client at login — the server is always the real authority on those).
+
+function renderMaintenanceList() {
+    const tbody = document.getElementById('maint-data-list');
+    if (!tbody) return;
+    if (!fleetMaintenance.length) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#a0aec0;">ምንም የጥገና ምዝገባ የለም</td></tr>`;
+        return;
+    }
+    const typeLabels = { routine: 'መደበኛ', repair: 'ጥገና' };
+    tbody.innerHTML = fleetMaintenance.map(item => `
+        <tr>
+            <td>${item.date}</td>
+            <td>${item.vehiclePlate} (${item.vehicleType})</td>
+            <td>${typeLabels[item.maintenanceType] || item.maintenanceType}</td>
+            <td>${item.description || '-'}</td>
+            <td>${(item.cost||0).toLocaleString('en-US')} ብር</td>
+            <td>${maintenanceSignCellHtml(item, 'prepared')}</td>
+            <td>${maintenanceSignCellHtml(item, 'approved')}</td>
+            <td class="no-print">${!item.preparedBy ? `<button onclick="deleteMaintenance('${item._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
+        </tr>`).join('');
+}
+
+async function handleMaintenanceSubmit(e) {
+    e.preventDefault();
+    const fd = new FormData();
+    fd.append('vehicleId', document.getElementById('maint-vehicle').value);
+    fd.append('date', document.getElementById('maint-date').value);
+    fd.append('odometerKm', getAmountValue('maint-odometer') || 0);
+    fd.append('maintenanceType', document.getElementById('maint-type').value);
+    fd.append('cost', getAmountValue('maint-cost') || 0);
+    fd.append('garage', document.getElementById('maint-garage').value.trim());
+    fd.append('description', document.getElementById('maint-description').value.trim());
+    fd.append('nextServiceKm', getAmountValue('maint-next-km') || '');
+    fd.append('nextServiceDate', document.getElementById('maint-next-date').value);
+    const receiptFile = document.getElementById('maint-receipt').files[0];
+    if (receiptFile) fd.append('receipt', receiptFile);
+
+    try {
+        const res = await authFetch('/api/fleet/maintenance', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        document.getElementById('maintenance-form').reset();
+        fetchMaintenanceList();
+    } catch (err) {
+        alert('መመዝገብ አልተቻለም');
+    }
+}
+
+async function deleteMaintenance(id) {
+    if (!confirm('ይህን የጥገና ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
+    try {
+        await authFetch(`/api/fleet/maintenance/${id}`, { method: 'DELETE' });
+        fetchMaintenanceList();
+    } catch (err) {
+        alert('ማጥፋት አልተቻለም');
+    }
+}
+
+// ---------- Fuel Log (actual receipts, no approval) ----------
+let fleetFuelLogs = [];
+
+async function fetchFuelLogs() {
+    try {
+        const res = await authFetch('/api/fleet/fuel-logs');
+        fleetFuelLogs = await res.json();
+        renderFuelLogList();
+    } catch (err) {
+        console.log('የነዳጅ ምዝገባ ማምጣት አልተቻለም');
+    }
+}
+
+function renderFuelLogList() {
+    const tbody = document.getElementById('fuel-data-list');
+    if (!tbody) return;
+    if (!fleetFuelLogs.length) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#a0aec0;">ምንም የነዳጅ ምዝገባ የለም</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = fleetFuelLogs.map(f => `
+        <tr>
+            <td>${f.date}</td>
+            <td>${f.vehiclePlate} (${f.vehicleType})</td>
+            <td>${f.station || '-'}</td>
+            <td>${(f.liters||0).toLocaleString('en-US')}</td>
+            <td>${(f.cost||0).toLocaleString('en-US')} ብር</td>
+            <td>${(f.odometerKm||0).toLocaleString('en-US')}</td>
+            <td class="no-print"><button onclick="deleteFuelLog('${f._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button></td>
+        </tr>`).join('');
+}
+
+async function handleFuelLogSubmit(e) {
+    e.preventDefault();
+    const fd = new FormData();
+    fd.append('vehicleId', document.getElementById('fuel-vehicle').value);
+    fd.append('date', document.getElementById('fuel-date').value);
+    fd.append('station', document.getElementById('fuel-station').value.trim());
+    fd.append('liters', getAmountValue('fuel-liters') || 0);
+    fd.append('cost', getAmountValue('fuel-cost') || 0);
+    fd.append('odometerKm', getAmountValue('fuel-odometer') || 0);
+    const receiptFile = document.getElementById('fuel-receipt').files[0];
+    if (receiptFile) fd.append('receipt', receiptFile);
+
+    try {
+        const res = await authFetch('/api/fleet/fuel-logs', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        document.getElementById('fuel-form').reset();
+        fetchFuelLogs();
+    } catch (err) {
+        alert('መመዝገብ አልተቻለም');
+    }
+}
+
+async function deleteFuelLog(id) {
+    if (!confirm('ይህን ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
+    try {
+        await authFetch(`/api/fleet/fuel-logs/${id}`, { method: 'DELETE' });
+        fetchFuelLogs();
+    } catch (err) {
+        alert('ማጥፋት አልተቻለም');
     }
 }

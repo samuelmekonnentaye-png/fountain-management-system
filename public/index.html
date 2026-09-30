@@ -209,6 +209,11 @@
                 <li id="menu-report" class="sidebar-item" onclick="showSection('report-sec', 'menu-report')"><i class="fas fa-chart-line"></i> የፋይናንስ ሪፖርት</li>
                 <li id="menu-signature" class="sidebar-item" onclick="showSection('signature-sec', 'menu-signature')"><i class="fas fa-signature"></i> የፊርማ ምዝገባ</li>
                 <li id="menu-trash" class="sidebar-item" onclick="showSection('trash-sec', 'menu-trash')"><i class="fas fa-trash"></i> ትራሽ (Trash)</li>
+                <li style="padding: 12px 20px 4px; font-size:11.5px; color:rgba(255,255,255,0.4); letter-spacing:0.5px;">ፍሊት ማኔጅመንት</li>
+                <li id="menu-fleet-vehicles" class="sidebar-item" onclick="showSection('fleet-vehicles-sec', 'menu-fleet-vehicles')"><i class="fas fa-truck-pickup"></i> ተሽከርካሪዎች</li>
+                <li id="menu-fleet-trips" class="sidebar-item" onclick="showSection('fleet-trips-sec', 'menu-fleet-trips')"><i class="fas fa-road"></i> የአጠቃቀም ምዝገባ</li>
+                <li id="menu-fleet-maintenance" class="sidebar-item" onclick="showSection('fleet-maintenance-sec', 'menu-fleet-maintenance')"><i class="fas fa-tools"></i> ጥገና ምዝገባ</li>
+                <li id="menu-fleet-fuel" class="sidebar-item" onclick="showSection('fleet-fuel-sec', 'menu-fleet-fuel')"><i class="fas fa-gas-pump"></i> ነዳጅ ምዝገባ</li>
             </ul>
 
             <div style="margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
@@ -569,6 +574,351 @@
                             <tr><td colspan="6" style="text-align:center; color:#a0aec0;">በመጫን ላይ...</td></tr>
                         </tbody>
                     </table>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION 1: VEHICLE REGISTRY + DOCUMENTS/EXPIRY -->
+            <div id="fleet-vehicles-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print">
+                    <h3 id="veh-form-title"><i class="fas fa-truck-pickup"></i> አዲስ ተሽከርካሪ መዝግብ</h3>
+                    <form id="vehicle-form" onsubmit="handleVehicleSubmit(event)">
+                        <input type="hidden" id="veh-edit-id">
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>ሰሌዳ ቁጥር፡</label>
+                                <input type="text" id="veh-plate" placeholder="ለምሳሌ፡ 3-A12345" required>
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የመኪናው አይነት፡</label>
+                                <input type="text" id="veh-type" placeholder="ለምሳሌ፡ ሱዙኪ" required>
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>ሞዴል/ዓመት፡</label>
+                                <input type="text" id="veh-model" placeholder="ለምሳሌ፡ 2019">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>ቻሲስ/ሞተር ቁጥር፡</label>
+                                <input type="text" id="veh-chassis">
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የተመደበለት ሹፌር ስም፡</label>
+                                <input type="text" id="veh-driver">
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የአሁኑ ኪሎሜትር፡</label>
+                                <input type="text" inputmode="numeric" id="veh-current-km" placeholder="0" oninput="formatAmountInput(this)">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>ሁኔታ፡</label>
+                                <select id="veh-status">
+                                    <option value="active">አገልግሎት ላይ</option>
+                                    <option value="maintenance">ጥገና ላይ</option>
+                                    <option value="out_of_service">ከአገልግሎት ውጪ</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የነዳጅ አይነት፡</label>
+                                <select id="veh-fuel-type">
+                                    <option value="ናፍጣ">ናፍጣ</option>
+                                    <option value="ቤንዚን">ቤንዚን</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>ኪ.ሜ በሊትር (efficiency)፡</label>
+                                <input type="text" inputmode="decimal" id="veh-km-per-liter" placeholder="ለምሳሌ፡ 10" oninput="formatAmountInput(this)">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label><i class="fas fa-camera"></i> የመኪና ፎቶ (አማራጭ)፡</label>
+                            <input type="file" id="veh-photo" accept="image/*" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px dashed rgba(255,255,255,0.3);">
+                        </div>
+
+                        <h4 style="margin:18px 0 10px; color:#a0aec0;"><i class="fas fa-file-alt"></i> ሰነዶች እና ማብቂያ ቀናት</h4>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>ሊብሬ ማብቂያ ቀን፡</label>
+                                <input type="date" id="veh-doc-libre-expiry">
+                            </div>
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>ቦሎ ማብቂያ ቀን፡</label>
+                                <input type="date" id="veh-doc-bolo-expiry">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>መድን (ኢንሹራንስ) ማብቂያ ቀን፡</label>
+                                <input type="date" id="veh-doc-insurance-expiry">
+                            </div>
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>ብቃት ማረጋገጫ ማብቂያ ቀን፡</label>
+                                <input type="date" id="veh-doc-competency-expiry">
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 10px;">
+                            <button type="submit" id="veh-btn-submit" class="btn-submit"><i class="fas fa-save"></i> ተሽከርካሪ መዝግብ</button>
+                            <button type="button" id="veh-btn-cancel" class="btn-submit" style="display:none; background:#4a5568;" onclick="resetVehicleForm()">ይቅር</button>
+                        </div>
+                    </form>
+                </section>
+
+                <section class="table-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                        <h3><i class="fas fa-list"></i> የተመዘገቡ ተሽከርካሪዎች ዝርዝር</h3>
+                        <div class="no-print" id="fleet-vehicle-trash-btn-wrap" style="display:none;">
+                            <button onclick="toggleVehicleTrash()" class="btn-submit" style="background:#4a5568; padding:8px 15px; font-size:13px;"><i class="fas fa-trash"></i> የተሰረዙ ተሽከርካሪዎች</button>
+                        </div>
+                    </div>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ሰሌዳ ቁጥር</th>
+                                    <th>አይነት/ሞዴል</th>
+                                    <th>ሹፌር</th>
+                                    <th>የአሁኑ ኪ.ሜ</th>
+                                    <th>ሁኔታ</th>
+                                    <th>የሰነድ ሁኔታ</th>
+                                    <th class="no-print">ተግባር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="veh-data-list"></tbody>
+                        </table>
+                    </div>
+                    <div id="fleet-vehicle-trash-list" style="display:none; margin-top:18px;"></div>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION 2: TRIP / USAGE LOG -->
+            <div id="fleet-trips-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print" id="fleet-fuel-price-box" style="display:none;">
+                    <h3><i class="fas fa-gas-pump"></i> የነዳጅ ዋጋ ቅንብር</h3>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items:flex-end;" class="form-group">
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>ናፍጣ (ብር/ሊትር)፡</label>
+                            <input type="text" inputmode="decimal" id="fuel-price-diesel" oninput="formatAmountInput(this)">
+                        </div>
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>ቤንዚን (ብር/ሊትር)፡</label>
+                            <input type="text" inputmode="decimal" id="fuel-price-benzine" oninput="formatAmountInput(this)">
+                        </div>
+                        <button type="button" class="btn-submit" style="flex:0 0 auto;" onclick="saveFuelPrices()"><i class="fas fa-save"></i> አስቀምጥ</button>
+                    </div>
+                </section>
+
+                <section class="form-section no-print">
+                    <h3><i class="fas fa-plus-circle"></i> የተሽከርካሪ አጠቃቀም መዝግብ</h3>
+                    <form id="trip-form" onsubmit="handleTripSubmit(event)">
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>ዲፓርትመንት/ክፍል፡</label>
+                                <select id="trip-department" required>
+                                    <option value="">-- ይምረጡ --</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>ተሽከርካሪ፡</label>
+                                <select id="trip-vehicle" onchange="updateTripEstimate()" required>
+                                    <option value="">-- ይምረጡ --</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>የሄዱበት ቦታ፡</label>
+                                <input type="text" id="trip-destination" placeholder="ለምሳሌ፡ ደብረዘይት">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>ቀን፡</label>
+                                <input type="date" id="trip-date" required>
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የመውጫ ሰዓት፡</label>
+                                <input type="time" id="trip-departure-time">
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የወጣበት ኪሎሜትር፡</label>
+                                <input type="text" inputmode="numeric" id="trip-departure-km" oninput="formatAmountInput(this); updateTripEstimate()" required>
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የተመለሰበት ኪሎሜትር፡</label>
+                                <input type="text" inputmode="numeric" id="trip-return-km" oninput="formatAmountInput(this); updateTripEstimate()" required>
+                            </div>
+                        </div>
+                        <p id="trip-estimate-preview" style="font-size:14px; color:#a0aec0; margin:-4px 0 14px;"></p>
+                        <button type="submit" class="btn-submit"><i class="fas fa-save"></i> መዝግብ</button>
+                    </form>
+                </section>
+
+                <section class="table-section">
+                    <h3 style="margin-bottom: 15px;"><i class="fas fa-list"></i> የተመዘገበ አጠቃቀም ዝርዝር</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ቀን</th>
+                                    <th>ዲፓርትመንት</th>
+                                    <th>የሄዱበት ቦታ</th>
+                                    <th>ተሽከርካሪ</th>
+                                    <th>ኪ.ሜ ንባብ (ወጣ-ተመለሰ)</th>
+                                    <th>የተጓዘው ኪ.ሜ</th>
+                                    <th>የነዳጅ ወጪ ግምት</th>
+                                    <th class="no-print">ተግባር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trip-data-list"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION 3: MAINTENANCE (with approval workflow) -->
+            <div id="fleet-maintenance-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print">
+                    <h3><i class="fas fa-tools"></i> አዲስ ጥገና/አገልግሎት መዝግብ</h3>
+                    <form id="maintenance-form" onsubmit="handleMaintenanceSubmit(event)">
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>ተሽከርካሪ፡</label>
+                                <select id="maint-vehicle" required>
+                                    <option value="">-- ይምረጡ --</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ቀን፡</label>
+                                <input type="date" id="maint-date" required>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>የኪሎሜትር ንባብ፡</label>
+                                <input type="text" inputmode="numeric" id="maint-odometer" oninput="formatAmountInput(this)">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ዓይነት፡</label>
+                                <select id="maint-type">
+                                    <option value="routine">routine (መደበኛ)</option>
+                                    <option value="repair">repair (ጥገና)</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ወጪ (ብር)፡</label>
+                                <input type="text" inputmode="numeric" id="maint-cost" oninput="formatAmountInput(this)" required>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ጋራዥ/አቅራቢ፡</label>
+                                <input type="text" id="maint-garage">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>መግለጫ፡</label>
+                            <textarea id="maint-description" rows="2" placeholder="የተደረገው ጥገና ምን እንደሆነ ይግለጹ"></textarea>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የሚቀጥለው አገልግሎት ኪ.ሜ (አማራጭ)፡</label>
+                                <input type="text" inputmode="numeric" id="maint-next-km" oninput="formatAmountInput(this)">
+                            </div>
+                            <div style="flex: 1; min-width: 180px;">
+                                <label>የሚቀጥለው አገልግሎት ቀን (አማራጭ)፡</label>
+                                <input type="date" id="maint-next-date">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label><i class="fas fa-receipt"></i> ደረሰኝ (አማራጭ)፡</label>
+                            <input type="file" id="maint-receipt" accept="image/*,application/pdf" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px dashed rgba(255,255,255,0.3);">
+                        </div>
+                        <button type="submit" class="btn-submit"><i class="fas fa-save"></i> መዝግብ</button>
+                    </form>
+                </section>
+
+                <section class="table-section">
+                    <h3 style="margin-bottom: 15px;"><i class="fas fa-list"></i> የጥገና ምዝገባ ዝርዝር</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ቀን</th>
+                                    <th>ተሽከርካሪ</th>
+                                    <th>ዓይነት</th>
+                                    <th>መግለጫ</th>
+                                    <th>ወጪ</th>
+                                    <th>አዘጋጀው</th>
+                                    <th>አጽዳቂ</th>
+                                    <th class="no-print">ተግባር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="maint-data-list"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION 4: FUEL LOG (actual receipts) -->
+            <div id="fleet-fuel-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print">
+                    <h3><i class="fas fa-gas-pump"></i> አዲስ የነዳጅ ግዢ መዝግብ</h3>
+                    <form id="fuel-form" onsubmit="handleFuelLogSubmit(event)">
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>ተሽከርካሪ፡</label>
+                                <select id="fuel-vehicle" required>
+                                    <option value="">-- ይምረጡ --</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ቀን፡</label>
+                                <input type="date" id="fuel-date" required>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ማደያ፡</label>
+                                <input type="text" id="fuel-station">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ሊትር፡</label>
+                                <input type="text" inputmode="decimal" id="fuel-liters" oninput="formatAmountInput(this)" required>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ጠቅላላ ዋጋ (ብር)፡</label>
+                                <input type="text" inputmode="numeric" id="fuel-cost" oninput="formatAmountInput(this)" required>
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>የኪሎሜትር ንባብ፡</label>
+                                <input type="text" inputmode="numeric" id="fuel-odometer" oninput="formatAmountInput(this)">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label><i class="fas fa-receipt"></i> ደረሰኝ (አማራጭ)፡</label>
+                            <input type="file" id="fuel-receipt" accept="image/*,application/pdf" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px dashed rgba(255,255,255,0.3);">
+                        </div>
+                        <button type="submit" class="btn-submit"><i class="fas fa-save"></i> መዝግብ</button>
+                    </form>
+                </section>
+
+                <section class="table-section">
+                    <h3 style="margin-bottom: 15px;"><i class="fas fa-list"></i> የነዳጅ ግዢ ዝርዝር</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ቀን</th>
+                                    <th>ተሽከርካሪ</th>
+                                    <th>ማደያ</th>
+                                    <th>ሊትር</th>
+                                    <th>ዋጋ</th>
+                                    <th>ኪ.ሜ ንባብ</th>
+                                    <th class="no-print">ተግባር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fuel-data-list"></tbody>
+                        </table>
+                    </div>
                 </section>
             </div>
 
