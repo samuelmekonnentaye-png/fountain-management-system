@@ -168,6 +168,7 @@ const Signature = mongoose.model('Signature', signatureSchema);
 const notificationSchema = new mongoose.Schema({
     toUserId: { type: String, required: true },
     type: { type: String, default: 'approval_request' }, // 'approval_request' | 'approved'
+    module: { type: String, default: 'record' }, // 'record' | 'fleet_maintenance'
     recordId: String,
     recordName: String,
     fromUserId: String,
@@ -1181,6 +1182,536 @@ app.put('/api/notifications/:id/read', requireAuth, async (req, res) => {
     } catch (err) {
         logError('Mark notification read error:', err);
         res.status(500).json({ error: 'ማሳወቂያውን ማዘመን አልተቻለም' });
+    }
+});
+
+// =====================================================================
+// ===== FLEET MANAGEMENT (ተሽከርካሪዎች / የአጠቃቀም / ጥገና / ነዳጅ) =====
+// =====================================================================
+// The browser side (public/app.js) already calls every /api/fleet/... route
+// below. Without these routes the server answered with its default HTML
+// "Cannot POST /api/fleet/vehicles" page, which the browser could not read
+// as JSON — that is what produced the "መመዝገብ አልተቻለም" alert.
+
+// Departments shown in the trip-log dropdown. Edit this list to match the
+// company's real departments.
+const FLEET_DEPARTMENTS = ['ፋይናንስ', 'ጥበቃ', 'አስተዳደር', 'ሽያጭ', 'ግዢ', 'ሎጂስቲክስ', 'ሰው ሀብት', 'ቴክኒክ', 'ሌላ'];
+const VALID_VEHICLE_STATUS = ['active', 'maintenance', 'out_of_service'];
+
+const vehicleDocSchema = new mongoose.Schema({ expiryDate: { type: String, default: '' } }, { _id: false });
+const vehicleSchema = new mongoose.Schema({
+    plateNumber: { type: String, required: true },
+    vehicleType: { type: String, required: true },
+    model: { type: String, default: '' },
+    chassisNumber: { type: String, default: '' },
+    driverName: { type: String, default: '' },
+    currentKm: { type: Number, default: 0 },
+    status: { type: String, default: 'active' },
+    fuelType: { type: String, default: 'ናፍጣ' },
+    kmPerLiter: { type: Number, default: 0 },
+    photo: { type: String, default: '' },
+    documents: {
+        libre: { type: vehicleDocSchema, default: () => ({}) },
+        bolo: { type: vehicleDocSchema, default: () => ({}) },
+        insurance: { type: vehicleDocSchema, default: () => ({}) },
+        competency: { type: vehicleDocSchema, default: () => ({}) }
+    },
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date, default: null },
+    createdAt: { type: Date, default: Date.now }
+});
+const Vehicle = mongoose.model('Vehicle', vehicleSchema);
+
+const fleetSettingsSchema = new mongoose.Schema({
+    key: { type: String, default: 'main', unique: true },
+    dieselPricePerLiter: { type: Number, default: 0 },
+    benzinePricePerLiter: { type: Number, default: 0 }
+});
+const FleetSettings = mongoose.model('FleetSettings', fleetSettingsSchema);
+
+const tripSchema = new mongoose.Schema({
+    userId: String,
+    vehicleId: String,
+    vehiclePlate: String,
+    vehicleType: String,
+    department: String,
+    destination: { type: String, default: '*' },
+    tripDate: String,
+    departureTime: { type: String, default: '' },
+    departureKm: Number,
+    returnKm: Number,
+    distanceKm: Number,
+    estimatedFuelCost: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now }
+});
+const Trip = mongoose.model('Trip', tripSchema);
+
+const signSlotSchema = {
+    userId: String, fullName: String, responsibility: String,
+    signatureImage: String, signedAt: Date
+};
+const maintenanceSchema = new mongoose.Schema({
+    userId: String,
+    vehicleId: String,
+    vehiclePlate: String,
+    vehicleType: String,
+    date: String,
+    odometerKm: { type: Number, default: 0 },
+    maintenanceType: { type: String, default: 'routine' },
+    cost: { type: Number, default: 0 },
+    garage: { type: String, default: '' },
+    description: { type: String, default: '' },
+    nextServiceKm: { type: Number, default: null },
+    nextServiceDate: { type: String, default: '' },
+    receipt: { type: String, default: '' },
+    preparedBy: signSlotSchema,
+    approvedBy: signSlotSchema,
+    approval: { pendingApproverId: String, pendingApproverName: String, requestedAt: Date },
+    createdAt: { type: Date, default: Date.now }
+});
+const Maintenance = mongoose.model('Maintenance', maintenanceSchema);
+
+const fuelLogSchema = new mongoose.Schema({
+    userId: String,
+    vehicleId: String,
+    vehiclePlate: String,
+    vehicleType: String,
+    date: String,
+    station: { type: String, default: '' },
+    liters: { type: Number, default: 0 },
+    cost: { type: Number, default: 0 },
+    odometerKm: { type: Number, default: 0 },
+    receipt: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now }
+});
+const FuelLog = mongoose.model('FuelLog', fuelLogSchema);
+
+// ---------- helpers ----------
+function toNum(v, fallback) {
+    if (v === undefined || v === null || v === '') return fallback;
+    const n = Number(String(v).replace(/,/g, ''));
+    return Number.isFinite(n) ? n : fallback;
+}
+function parseVehicleDocuments(raw) {
+    let parsed = raw;
+    if (typeof raw === 'string') {
+        try { parsed = JSON.parse(raw); } catch (e) { parsed = {}; }
+    }
+    parsed = parsed || {};
+    const out = {};
+    ['libre', 'bolo', 'insurance', 'competency'].forEach(k => {
+        out[k] = { expiryDate: (parsed[k] && parsed[k].expiryDate) ? String(parsed[k].expiryDate) : '' };
+    });
+    return out;
+}
+async function getFleetSettings() {
+    let s = await FleetSettings.findOne({ key: 'main' });
+    if (!s) s = await FleetSettings.create({ key: 'main' });
+    return s;
+}
+async function uploadFleetFile(file, folder) {
+    if (!file) return '';
+    const uploaded = await uploadBufferToCloudinary(file.buffer, folder, 'auto');
+    return uploaded.secure_url;
+}
+
+// ---------- Vehicles ----------
+app.get('/api/fleet/vehicles', requireAuth, async (req, res) => {
+    try {
+        const list = await Vehicle.find({ isDeleted: { $ne: true } }).sort({ createdAt: -1 });
+        res.json(list);
+    } catch (err) {
+        logError('Fleet get vehicles error:', err);
+        res.status(500).json({ error: 'ተሽከርካሪዎችን ማምጣት አልተቻለም' });
+    }
+});
+
+app.get('/api/fleet/vehicles/trash/list', requireAdmin, async (req, res) => {
+    try {
+        const list = await Vehicle.find({ isDeleted: true }).sort({ deletedAt: -1 });
+        res.json(list);
+    } catch (err) {
+        logError('Fleet vehicle trash error:', err);
+        res.status(500).json({ error: 'ትራሹን ማምጣት አልተቻለም' });
+    }
+});
+
+function buildVehicleData(body) {
+    const status = VALID_VEHICLE_STATUS.includes(body.status) ? body.status : 'active';
+    return {
+        plateNumber: String(body.plateNumber || '').trim(),
+        vehicleType: String(body.vehicleType || '').trim(),
+        model: String(body.model || '').trim(),
+        chassisNumber: String(body.chassisNumber || '').trim(),
+        driverName: String(body.driverName || '').trim(),
+        currentKm: toNum(body.currentKm, 0),
+        status,
+        fuelType: body.fuelType === 'ቤንዚን' ? 'ቤንዚን' : 'ናፍጣ',
+        kmPerLiter: toNum(body.kmPerLiter, 0),
+        documents: parseVehicleDocuments(body.documents)
+    };
+}
+
+app.post('/api/fleet/vehicles', requireAuth, requirePermission('prepare'), upload.single('photo'), async (req, res) => {
+    try {
+        const data = buildVehicleData(req.body);
+        if (!data.plateNumber) return res.status(400).json({ error: 'የሰሌዳ ቁጥር ያስፈልጋል' });
+        if (!data.vehicleType) return res.status(400).json({ error: 'የመኪናው አይነት ያስፈልጋል' });
+        if (data.currentKm < 0 || data.kmPerLiter < 0) return res.status(400).json({ error: 'ኪሎሜትር አሉታዊ መሆን አይችልም' });
+
+        const duplicate = await Vehicle.findOne({ plateNumber: data.plateNumber, isDeleted: { $ne: true } });
+        if (duplicate) return res.status(400).json({ error: 'ይህ ሰሌዳ ቁጥር ቀድሞ ተመዝግቧል' });
+
+        if (req.file) {
+            try { data.photo = await uploadFleetFile(req.file, 'fountain-fleet'); }
+            catch (upErr) {
+                logError('Fleet vehicle photo upload error:', upErr);
+                return res.status(500).json({ error: 'የመኪናውን ፎቶ መጫን አልተቻለም (Cloudinary ቅንብርን ያረጋግጡ)። ያለ ፎቶ ይሞክሩ።' });
+            }
+        }
+        const vehicle = await Vehicle.create(data);
+        res.json(vehicle);
+    } catch (err) {
+        logError('Fleet add vehicle error:', err);
+        res.status(500).json({ error: 'ተሽከርካሪውን መመዝገብ አልተቻለም (የሰርቨር ስህተት)' });
+    }
+});
+
+app.put('/api/fleet/vehicles/:id', requireAuth, requirePermission('prepare'), upload.single('photo'), async (req, res) => {
+    try {
+        const data = buildVehicleData(req.body);
+        if (!data.plateNumber) return res.status(400).json({ error: 'የሰሌዳ ቁጥር ያስፈልጋል' });
+        if (!data.vehicleType) return res.status(400).json({ error: 'የመኪናው አይነት ያስፈልጋል' });
+
+        const duplicate = await Vehicle.findOne({ plateNumber: data.plateNumber, isDeleted: { $ne: true }, _id: { $ne: req.params.id } });
+        if (duplicate) return res.status(400).json({ error: 'ይህ ሰሌዳ ቁጥር ለሌላ ተሽከርካሪ ተመዝግቧል' });
+
+        if (req.file) {
+            try { data.photo = await uploadFleetFile(req.file, 'fountain-fleet'); }
+            catch (upErr) {
+                logError('Fleet vehicle photo upload error:', upErr);
+                return res.status(500).json({ error: 'የመኪናውን ፎቶ መጫን አልተቻለም' });
+            }
+        }
+        const updated = await Vehicle.findByIdAndUpdate(req.params.id, data, { new: true });
+        if (!updated) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+        res.json(updated);
+    } catch (err) {
+        logError('Fleet update vehicle error:', err);
+        res.status(500).json({ error: 'ማሻሻል አልተቻለም' });
+    }
+});
+
+app.delete('/api/fleet/vehicles/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+    try {
+        const v = await Vehicle.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
+        if (!v) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+        res.json({ message: 'ወደ ትራሽ ተልኳል' });
+    } catch (err) {
+        logError('Fleet delete vehicle error:', err);
+        res.status(500).json({ error: 'ማጥፋት አልተቻለም' });
+    }
+});
+
+app.post('/api/fleet/vehicles/:id/restore', requireAdmin, async (req, res) => {
+    try {
+        const v = await Vehicle.findByIdAndUpdate(req.params.id, { isDeleted: false, deletedAt: null }, { new: true });
+        if (!v) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+        res.json(v);
+    } catch (err) {
+        logError('Fleet restore vehicle error:', err);
+        res.status(500).json({ error: 'መመለስ አልተቻለም' });
+    }
+});
+
+// ---------- Fuel price settings & departments ----------
+app.get('/api/fleet/settings', requireAuth, async (req, res) => {
+    try {
+        const s = await getFleetSettings();
+        res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter });
+    } catch (err) {
+        logError('Fleet get settings error:', err);
+        res.status(500).json({ error: 'ቅንብር ማምጣት አልተቻለም' });
+    }
+});
+app.put('/api/fleet/settings', requireAdmin, async (req, res) => {
+    try {
+        const diesel = toNum(req.body.dieselPricePerLiter, 0);
+        const benzine = toNum(req.body.benzinePricePerLiter, 0);
+        if (diesel < 0 || benzine < 0) return res.status(400).json({ error: 'ዋጋ አሉታዊ መሆን አይችልም' });
+        const s = await FleetSettings.findOneAndUpdate(
+            { key: 'main' },
+            { dieselPricePerLiter: diesel, benzinePricePerLiter: benzine },
+            { new: true, upsert: true }
+        );
+        res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter });
+    } catch (err) {
+        logError('Fleet save settings error:', err);
+        res.status(500).json({ error: 'ማስቀመጥ አልተቻለም' });
+    }
+});
+app.get('/api/fleet/departments', requireAuth, (req, res) => {
+    res.json(FLEET_DEPARTMENTS);
+});
+
+// ---------- Trips (የአጠቃቀም ምዝገባ) ----------
+app.get('/api/fleet/trips', requireAuth, async (req, res) => {
+    try {
+        const list = await Trip.find().sort({ tripDate: -1, createdAt: -1 }).limit(500);
+        res.json(list);
+    } catch (err) {
+        logError('Fleet get trips error:', err);
+        res.status(500).json({ error: 'የአጠቃቀም ምዝገባ ማምጣት አልተቻለም' });
+    }
+});
+app.post('/api/fleet/trips', requireAuth, requirePermission('prepare'), async (req, res) => {
+    try {
+        const { department, vehicleId, destination, tripDate, departureTime } = req.body;
+        const departureKm = toNum(req.body.departureKm, NaN);
+        const returnKm = toNum(req.body.returnKm, NaN);
+        if (!department || !vehicleId || !tripDate) return res.status(400).json({ error: 'ዲፓርትመንት፣ ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
+        if (isNaN(departureKm) || isNaN(returnKm)) return res.status(400).json({ error: 'የወጣበት እና የተመለሰበት ኪሎሜትር ያስፈልጋል' });
+        if (returnKm < departureKm) return res.status(400).json({ error: 'የተመለሰበት ኪሜ ከወጣበት ኪሜ ያንሳል' });
+
+        const vehicle = await Vehicle.findOne({ _id: vehicleId, isDeleted: { $ne: true } });
+        if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+
+        // The server always recomputes distance and fuel cost itself.
+        const distanceKm = returnKm - departureKm;
+        const settings = await getFleetSettings();
+        const pricePerLiter = vehicle.fuelType === 'ቤንዚን' ? settings.benzinePricePerLiter : settings.dieselPricePerLiter;
+        const estimatedFuelCost = vehicle.kmPerLiter > 0
+            ? Math.round(distanceKm * (pricePerLiter / vehicle.kmPerLiter) * 100) / 100
+            : 0;
+
+        const trip = await Trip.create({
+            userId: req.authUser.id,
+            vehicleId: vehicle._id.toString(),
+            vehiclePlate: vehicle.plateNumber,
+            vehicleType: vehicle.vehicleType,
+            department,
+            destination: String(destination || '').trim() || '*',
+            tripDate,
+            departureTime: departureTime || '',
+            departureKm, returnKm, distanceKm, estimatedFuelCost
+        });
+
+        if (returnKm > (vehicle.currentKm || 0)) {
+            vehicle.currentKm = returnKm;
+            await vehicle.save();
+        }
+        res.json(trip);
+    } catch (err) {
+        logError('Fleet add trip error:', err);
+        res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
+    }
+});
+app.delete('/api/fleet/trips/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+    try {
+        await Trip.findByIdAndDelete(req.params.id);
+        res.json({ message: 'ተሰርዟል' });
+    } catch (err) {
+        logError('Fleet delete trip error:', err);
+        res.status(500).json({ error: 'ማጥፋት አልተቻለም' });
+    }
+});
+
+// ---------- Maintenance (with prepare → send → approve workflow) ----------
+app.get('/api/fleet/maintenance', requireAuth, async (req, res) => {
+    try {
+        const list = await Maintenance.find().sort({ date: -1, createdAt: -1 }).limit(500);
+        res.json(list);
+    } catch (err) {
+        logError('Fleet get maintenance error:', err);
+        res.status(500).json({ error: 'የጥገና ምዝገባ ማምጣት አልተቻለም' });
+    }
+});
+app.post('/api/fleet/maintenance', requireAuth, requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
+    try {
+        const { vehicleId, date, maintenanceType, garage, description, nextServiceDate } = req.body;
+        if (!vehicleId || !date) return res.status(400).json({ error: 'ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
+        const cost = toNum(req.body.cost, NaN);
+        if (isNaN(cost) || cost < 0) return res.status(400).json({ error: 'ትክክለኛ ወጪ ያስገቡ' });
+
+        const vehicle = await Vehicle.findById(vehicleId);
+        if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+
+        let receipt = '';
+        if (req.file) {
+            try { receipt = await uploadFleetFile(req.file, 'fountain-fleet-receipts'); }
+            catch (upErr) {
+                logError('Fleet maintenance receipt upload error:', upErr);
+                return res.status(500).json({ error: 'ደረሰኙን መጫን አልተቻለም' });
+            }
+        }
+        const item = await Maintenance.create({
+            userId: req.authUser.id,
+            vehicleId: vehicle._id.toString(),
+            vehiclePlate: vehicle.plateNumber,
+            vehicleType: vehicle.vehicleType,
+            date,
+            odometerKm: toNum(req.body.odometerKm, 0),
+            maintenanceType: ['routine', 'repair'].includes(maintenanceType) ? maintenanceType : 'routine',
+            cost,
+            garage: String(garage || '').trim(),
+            description: String(description || '').trim(),
+            nextServiceKm: toNum(req.body.nextServiceKm, null),
+            nextServiceDate: nextServiceDate || '',
+            receipt
+        });
+        res.json(item);
+    } catch (err) {
+        logError('Fleet add maintenance error:', err);
+        res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
+    }
+});
+app.delete('/api/fleet/maintenance/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+    try {
+        const item = await Maintenance.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (item.preparedBy && item.preparedBy.userId) {
+            return res.status(400).json({ error: 'የተፈረመበትን ምዝገባ መሰረዝ አይቻልም' });
+        }
+        await item.deleteOne();
+        res.json({ message: 'ተሰርዟል' });
+    } catch (err) {
+        logError('Fleet delete maintenance error:', err);
+        res.status(500).json({ error: 'ማጥፋት አልተቻለም' });
+    }
+});
+// Same rules as POST /api/records/:id/sign: signature password every time,
+// preparer must pick one approver, only that approver (or an Admin) approves.
+app.post('/api/fleet/maintenance/:id/sign', requireAuth, async (req, res) => {
+    try {
+        const { slot, signaturePassword, sendToApproverId } = req.body;
+        if (!['prepared', 'approved'].includes(slot)) return res.status(400).json({ error: 'ልክ ያልሆነ የፊርማ ቦታ' });
+
+        const requesterUser = await User.findById(req.authUser.id);
+        if (!requesterUser) return res.status(401).json({ error: 'ተጠቃሚው አልተገኘም' });
+        if (slot === 'prepared' && !hasPermission(requesterUser, 'prepare')) {
+            return res.status(403).json({ error: 'ይህን ለማድረግ ተገቢው ኃላፊነት የለዎትም' });
+        }
+        if (slot === 'approved' && !hasPermission(requesterUser, 'approve')) {
+            return res.status(403).json({ error: 'ይህን ለማጽደቅ ፈቃድ የለዎትም' });
+        }
+
+        const sig = await Signature.findOne({ userId: req.authUser.id });
+        if (!sig) return res.status(400).json({ error: 'መጀመሪያ የራስዎን ፊርማ ይመዝገቡ' });
+        const matches = await bcrypt.compare(signaturePassword || '', sig.signaturePasswordHash);
+        if (!matches) return res.status(401).json({ error: 'የፊርማ ፓስወርድ ትክክል አይደለም' });
+
+        const item = await Maintenance.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+
+        const signaturePayload = {
+            userId: sig.userId, fullName: sig.fullName, responsibility: sig.responsibility,
+            signatureImage: sig.signatureImage, signedAt: new Date()
+        };
+        const update = {};
+        let notifyApproverId = null;
+
+        if (slot === 'prepared') {
+            if (!sendToApproverId) return res.status(400).json({ error: 'እባክዎ ማጽደቅ ያለበትን ሰው ይምረጡ' });
+            const approverUser = await User.findById(sendToApproverId);
+            if (!approverUser || approverUser.status !== 'approved' || !hasPermission(approverUser, 'approve')) {
+                return res.status(400).json({ error: 'የመረጡት ሰው ማጽደቅ የሚያስችል ኃላፊነት የለውም' });
+            }
+            const approverSig = await Signature.findOne({ userId: sendToApproverId });
+            if (!approverSig) return res.status(400).json({ error: 'የመረጡት ሰው ገና ፊርማ አልመዘገበም' });
+            update.preparedBy = signaturePayload;
+            update.approval = { pendingApproverId: sendToApproverId, pendingApproverName: approverSig.fullName, requestedAt: new Date() };
+            notifyApproverId = sendToApproverId;
+        } else {
+            const isAssigned = item.approval && item.approval.pendingApproverId === req.authUser.id;
+            if (!isAssigned && requesterUser.role !== 'Admin') {
+                return res.status(403).json({ error: 'ይህ ምዝገባ ለእርስዎ ማጽደቅ ገና አልተላከም' });
+            }
+            update.approvedBy = signaturePayload;
+            update.approval = { pendingApproverId: null, pendingApproverName: null, requestedAt: item.approval ? item.approval.requestedAt : null };
+        }
+
+        const updated = await Maintenance.findByIdAndUpdate(req.params.id, update, { new: true });
+        const label = `${updated.vehiclePlate} ጥገና`;
+        try {
+            if (notifyApproverId) {
+                await Notification.create({
+                    toUserId: notifyApproverId, type: 'approval_request', module: 'fleet_maintenance',
+                    recordId: updated._id.toString(), recordName: label,
+                    fromUserId: sig.userId, fromFullName: sig.fullName,
+                    message: `${sig.fullName} "${label}" የተባለውን የጥገና ምዝገባ እንዲያጸድቁ ልከውልዎታል።`
+                });
+            } else if (slot === 'approved' && updated.userId) {
+                await Notification.create({
+                    toUserId: updated.userId, type: 'approved', module: 'fleet_maintenance',
+                    recordId: updated._id.toString(), recordName: label,
+                    fromUserId: sig.userId, fromFullName: sig.fullName,
+                    message: `${sig.fullName} "${label}" የተባለውን የጥገና ምዝገባ አጽድቀዋል።`
+                });
+            }
+        } catch (notifErr) {
+            logError('Create fleet notification error:', notifErr);
+        }
+        res.json(updated);
+    } catch (err) {
+        logError('Sign maintenance error:', err);
+        res.status(500).json({ error: 'ፊርማ ማድረግ አልተቻለም' });
+    }
+});
+
+// ---------- Fuel log (actual receipts) ----------
+app.get('/api/fleet/fuel-logs', requireAuth, async (req, res) => {
+    try {
+        const list = await FuelLog.find().sort({ date: -1, createdAt: -1 }).limit(500);
+        res.json(list);
+    } catch (err) {
+        logError('Fleet get fuel logs error:', err);
+        res.status(500).json({ error: 'የነዳጅ ምዝገባ ማምጣት አልተቻለም' });
+    }
+});
+app.post('/api/fleet/fuel-logs', requireAuth, requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
+    try {
+        const { vehicleId, date, station } = req.body;
+        if (!vehicleId || !date) return res.status(400).json({ error: 'ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
+        const liters = toNum(req.body.liters, NaN);
+        const cost = toNum(req.body.cost, NaN);
+        if (isNaN(liters) || liters <= 0) return res.status(400).json({ error: 'ትክክለኛ የሊትር መጠን ያስገቡ' });
+        if (isNaN(cost) || cost < 0) return res.status(400).json({ error: 'ትክክለኛ ወጪ ያስገቡ' });
+
+        const vehicle = await Vehicle.findById(vehicleId);
+        if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+
+        let receipt = '';
+        if (req.file) {
+            try { receipt = await uploadFleetFile(req.file, 'fountain-fleet-receipts'); }
+            catch (upErr) {
+                logError('Fleet fuel receipt upload error:', upErr);
+                return res.status(500).json({ error: 'ደረሰኙን መጫን አልተቻለም' });
+            }
+        }
+        const log = await FuelLog.create({
+            userId: req.authUser.id,
+            vehicleId: vehicle._id.toString(),
+            vehiclePlate: vehicle.plateNumber,
+            vehicleType: vehicle.vehicleType,
+            date,
+            station: String(station || '').trim(),
+            liters, cost,
+            odometerKm: toNum(req.body.odometerKm, 0),
+            receipt
+        });
+        res.json(log);
+    } catch (err) {
+        logError('Fleet add fuel log error:', err);
+        res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
+    }
+});
+app.delete('/api/fleet/fuel-logs/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+    try {
+        await FuelLog.findByIdAndDelete(req.params.id);
+        res.json({ message: 'ተሰርዟል' });
+    } catch (err) {
+        logError('Fleet delete fuel log error:', err);
+        res.status(500).json({ error: 'ማጥፋት አልተቻለም' });
     }
 });
 
