@@ -1195,7 +1195,7 @@ app.put('/api/notifications/:id/read', requireAuth, async (req, res) => {
 
 // Departments shown in the trip-log dropdown. Edit this list to match the
 // company's real departments.
-const FLEET_DEPARTMENTS = ['ፋይናንስ', 'ጥበቃ', 'አስተዳደር', 'ሽያጭ', 'ግዢ', 'ሎጂስቲክስ', 'ሰው ሀብት', 'ቴክኒክ', 'ሌላ'];
+const FLEET_DEPARTMENTS = ['ፋይናንስ', 'ጥበቃ እና ደህንነት', 'የሰዉ ሃብት አስተዳደር', 'ማርኬቲንግ', 'አስተዳደር', 'ጠቅላላ አገልግሎት', 'ኦፕሬሽን', 'አይቲ', 'አቶ ሰለሞን', 'ስካይ ድሪም'];
 const VALID_VEHICLE_STATUS = ['active', 'maintenance', 'out_of_service'];
 
 const vehicleDocSchema = new mongoose.Schema({ expiryDate: { type: String, default: '' } }, { _id: false });
@@ -1457,6 +1457,18 @@ app.get('/api/fleet/departments', requireAuth, (req, res) => {
 // ---------- Trips (የአጠቃቀም ምዝገባ) ----------
 app.get('/api/fleet/trips', requireAuth, async (req, res) => {
     try {
+        // Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD — used by the weekly/range
+        // report. Without them the list behaves exactly as before.
+        const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+        const from = isoRe.test(req.query.from || '') ? req.query.from : null;
+        const to = isoRe.test(req.query.to || '') ? req.query.to : null;
+        if (from || to) {
+            const range = {};
+            if (from) range.$gte = from;
+            if (to) range.$lte = to;
+            const ranged = await Trip.find({ tripDate: range }).sort({ tripDate: 1, createdAt: 1 }).limit(5000);
+            return res.json(ranged);
+        }
         const list = await Trip.find().sort({ tripDate: -1, createdAt: -1 }).limit(500);
         res.json(list);
     } catch (err) {
