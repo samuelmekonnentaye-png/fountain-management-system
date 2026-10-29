@@ -214,6 +214,7 @@
                 <li id="menu-fleet-trips" class="sidebar-item" onclick="showSection('fleet-trips-sec', 'menu-fleet-trips')"><i class="fas fa-road"></i> የአጠቃቀም ምዝገባ</li>
                 <li id="menu-fleet-maintenance" class="sidebar-item" onclick="showSection('fleet-maintenance-sec', 'menu-fleet-maintenance')"><i class="fas fa-tools"></i> ጥገና ምዝገባ</li>
                 <li id="menu-fleet-fuel" class="sidebar-item" onclick="showSection('fleet-fuel-sec', 'menu-fleet-fuel')"><i class="fas fa-gas-pump"></i> ነዳጅ ምዝገባ</li>
+                <li id="menu-fleet-report" class="sidebar-item" onclick="showSection('fleet-report-sec', 'menu-fleet-report')"><i class="fas fa-file-excel"></i> ሳምንታዊ ሪፖርት</li>
             </ul>
 
             <div style="margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
@@ -917,6 +918,68 @@
                                 </tr>
                             </thead>
                             <tbody id="fuel-data-list"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION 5: WEEKLY / RANGE USAGE REPORT -->
+            <div id="fleet-report-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print">
+                    <h3><i class="fas fa-file-excel"></i> የተሽከርካሪ አጠቃቀም ሪፖርት (ሳምንታዊ / የተመረጠ ጊዜ)</h3>
+                    <p style="font-size:13px; color:#a0aec0; margin-bottom:14px;">በ"የአጠቃቀም ምዝገባ" ውስጥ የተመዘገቡ ጉዞዎች በተመረጠው ጊዜ ውስጥ ተሰብስበው ይቀርባሉ። ሳምንት ለማውጣት 7 ቀን ይምረጡ፤ ሶስት ወር ለማውጣት "ያለፉት 3 ወር" ይጫኑ።</p>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items:flex-end;" class="form-group">
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>ከቀን፡</label>
+                            <input type="date" id="freport-from" onchange="updateFleetReportEthLabel()">
+                        </div>
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>እስከ ቀን፡</label>
+                            <input type="date" id="freport-to" onchange="updateFleetReportEthLabel()">
+                        </div>
+                        <label style="flex: 0 0 auto; display:flex; align-items:center; gap:8px; padding-bottom:10px;">
+                            <input type="checkbox" id="freport-detail" checked style="width:auto;"> የየቀኑን ዝርዝር አካትት
+                        </label>
+                    </div>
+                    <p id="freport-eth-label" style="font-size:14px; color:#a0aec0; margin:-4px 0 12px;"></p>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="setFleetReportPreset(7)">ያለፉት 7 ቀን</button>
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="setFleetReportPreset(30)">ያለፉት 30 ቀን</button>
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="setFleetReportPreset(90)">ያለፉት 3 ወር</button>
+                        <button type="button" class="btn-submit" onclick="generateFleetReport()"><i class="fas fa-chart-bar"></i> ሪፖርት አውጣ</button>
+                        <button type="button" id="freport-download-btn" class="btn-submit" style="background:#2f855a;" onclick="downloadFleetReportExcel()" disabled><i class="fas fa-download"></i> Excel አውርድ</button>
+                    </div>
+                </section>
+
+                <section class="table-section" id="freport-result" style="display:none;">
+                    <h3 id="freport-title" style="margin-bottom: 15px;"><i class="fas fa-list"></i> ማጠቃለያ</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ተ.ቁ</th>
+                                    <th>ዲፓርትመንት</th>
+                                    <th>ጉዞዎች</th>
+                                    <th>የተጓዙት ኪ.ሜ</th>
+                                    <th>የተጠቀሙት ነዳጅ በብር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="freport-summary-list"></tbody>
+                        </table>
+                    </div>
+                    <h3 style="margin: 25px 0 15px;"><i class="fas fa-truck-pickup"></i> በመኪና አይነት</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ተ.ቁ</th>
+                                    <th>የመኪና አይነት</th>
+                                    <th>ጉዞዎች</th>
+                                    <th>የተጓዙት ኪ.ሜ</th>
+                                    <th>የተጠቀሙት ነዳጅ በብር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="freport-vehicle-list"></tbody>
                         </table>
                     </div>
                 </section>

@@ -335,6 +335,7 @@ function showSection(sectionId, menuId) {
     if (sectionId === 'fleet-trips-sec') { fetchVehicles(); fetchTripLogs(); loadFleetDepartments(); loadFuelPriceSettings(); }
     if (sectionId === 'fleet-maintenance-sec') { fetchVehicles(); fetchMaintenanceList(); }
     if (sectionId === 'fleet-fuel-sec') { fetchVehicles(); fetchFuelLogs(); }
+    if (sectionId === 'fleet-report-sec') initFleetReportSection();
     // Chart.js needs a visible (non-zero-size) canvas to size itself
     // correctly, so redraw the dashboard charts right after it becomes visible.
     if (sectionId === 'dashboard-sec') renderDashboardCharts();
@@ -2337,4 +2338,292 @@ async function deleteFuelLog(id) {
     } catch (err) {
         alert('ማጥፋት አልተቻለም');
     }
+}
+
+// =====================================================================
+// ===== Fleet weekly / range usage report (ሳምንታዊ ሪፖርት) =====
+// =====================================================================
+// Reads the trips already saved in "የአጠቃቀም ምዝገባ" for a chosen date
+// range and produces (1) an on-screen department summary and (2) an Excel
+// file in the same layout as the manual sheet: one block per day, then a
+// summary table (department / km traveled / fuel cost in birr).
+let fleetReportData = null;
+
+function fleetEsc(v) {
+    return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Gregorian -> Ethiopian calendar (the company's reports use Ethiopian dates).
+function gregorianToEthiopian(y, m, d) {
+    const a = Math.floor((14 - m) / 12);
+    const yy = y + 4800 - a;
+    const mm = m + 12 * a - 3;
+    const jdn = d + Math.floor((153 * mm + 2) / 5) + 365 * yy + Math.floor(yy / 4) - Math.floor(yy / 100) + Math.floor(yy / 400) - 32045;
+    const r = (jdn - 1723856) % 1461;
+    const n = (r % 365) + 365 * Math.floor(r / 1460);
+    return {
+        y: 4 * Math.floor((jdn - 1723856) / 1461) + Math.floor(r / 365) - Math.floor(r / 1460),
+        m: Math.floor(n / 30) + 1,
+        d: (n % 30) + 1
+    };
+}
+function isoToEthText(iso) {
+    const p = String(iso).split('-').map(Number);
+    const e = gregorianToEthiopian(p[0], p[1], p[2]);
+    return `${e.d}/${e.m}/${e.y}`;
+}
+function dateToISO(dt) {
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    return `${dt.getFullYear()}-${mm}-${dd}`;
+}
+function addDaysISO(iso, n) {
+    const p = iso.split('-').map(Number);
+    return dateToISO(new Date(p[0], p[1] - 1, p[2] + n, 12));
+}
+function daysBetweenISO(fromIso, toIso) {
+    const a = fromIso.split('-').map(Number), b = toIso.split('-').map(Number);
+    const da = Date.UTC(a[0], a[1] - 1, a[2]), db = Date.UTC(b[0], b[1] - 1, b[2]);
+    return Math.round((db - da) / 86400000) + 1;
+}
+
+function initFleetReportSection() {
+    loadFleetDepartments();
+    const fromEl = document.getElementById('freport-from');
+    const toEl = document.getElementById('freport-to');
+    if (fromEl && toEl && (!fromEl.value || !toEl.value)) setFleetReportPreset(7);
+    else updateFleetReportEthLabel();
+}
+function setFleetReportPreset(days) {
+    const to = dateToISO(new Date());
+    document.getElementById('freport-to').value = to;
+    document.getElementById('freport-from').value = addDaysISO(to, -(days - 1));
+    document.getElementById('freport-detail').checked = days <= 31;
+    updateFleetReportEthLabel();
+}
+function updateFleetReportEthLabel() {
+    const from = document.getElementById('freport-from').value;
+    const to = document.getElementById('freport-to').value;
+    const label = document.getElementById('freport-eth-label');
+    if (!label) return;
+    if (!from || !to) { label.textContent = ''; return; }
+    label.textContent = `ከ ${isoToEthText(from)} እስከ ${isoToEthText(to)} (ዓ.ም) — ${daysBetweenISO(from, to)} ቀን`;
+}
+
+function fleetReportDeptOrder(trips) {
+    const order = Array.isArray(fleetDepartments) ? fleetDepartments.slice() : [];
+    // Departments typed in older records that are no longer in the list are
+    // still counted — nothing is silently dropped from the report.
+    trips.forEach(t => { if (t.department && !order.includes(t.department)) order.push(t.department); });
+    return order;
+}
+function fleetReportSummary(trips, deptOrder) {
+    return deptOrder.map(dept => {
+        const own = trips.filter(t => t.department === dept);
+        return {
+            dept,
+            count: own.length,
+            km: own.reduce((s, t) => s + (t.distanceKm || 0), 0),
+            cost: Math.round(own.reduce((s, t) => s + (t.estimatedFuelCost || 0), 0) * 100) / 100
+        };
+    });
+}
+
+function fleetVehicleLabel(t) {
+    return String(t.vehicleType || '').trim() || 'ያልታወቀ';
+}
+function fleetReportVehicleSummary(trips) {
+    const map = new Map();
+    trips.forEach(t => {
+        const type = fleetVehicleLabel(t);
+        if (!map.has(type)) map.set(type, { type, count: 0, km: 0, cost: 0 });
+        const r = map.get(type);
+        r.count += 1;
+        r.km += t.distanceKm || 0;
+        r.cost += t.estimatedFuelCost || 0;
+    });
+    return Array.from(map.values())
+        .map(r => ({ type: r.type, count: r.count, km: r.km, cost: Math.round(r.cost * 100) / 100 }))
+        .sort((a, b) => b.km - a.km);
+}
+
+async function generateFleetReport() {
+    const from = document.getElementById('freport-from').value;
+    const to = document.getElementById('freport-to').value;
+    if (!from || !to) { alert('እባክዎ ከቀን እና እስከ ቀን ይምረጡ'); return; }
+    if (from > to) { alert('"ከቀን" ከ"እስከ ቀን" መቅደም አለበት'); return; }
+    const days = daysBetweenISO(from, to);
+    if (days > 366) { alert('ከአንድ ዓመት በላይ መምረጥ አይቻልም'); return; }
+
+    let includeDetail = document.getElementById('freport-detail').checked;
+    if (includeDetail && days > 31) {
+        includeDetail = false;
+        document.getElementById('freport-detail').checked = false;
+        alert('ከ31 ቀን በላይ ሲሆን የየቀኑ ዝርዝር አይካተትም፤ ማጠቃለያ ብቻ ይወጣል።');
+    }
+
+    try {
+        if (!fleetDepartments.length) await loadFleetDepartments();
+        const res = await authFetch(`/api/fleet/trips?from=${from}&to=${to}`);
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ሪፖርቱን ማምጣት አልተቻለም'); return; }
+        const trips = Array.isArray(data) ? data : [];
+        const deptOrder = fleetReportDeptOrder(trips);
+        fleetReportData = { from, to, trips, includeDetail, deptOrder };
+        renderFleetReportPreview();
+        document.getElementById('freport-download-btn').disabled = false;
+    } catch (err) {
+        alert('ሪፖርቱን ማምጣት አልተቻለም');
+    }
+}
+
+function renderFleetReportPreview() {
+    if (!fleetReportData) return;
+    const { from, to, trips, deptOrder } = fleetReportData;
+    const rows = fleetReportSummary(trips, deptOrder);
+    const money = n => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const totalKm = rows.reduce((s, r) => s + r.km, 0);
+    const totalCost = Math.round(rows.reduce((s, r) => s + r.cost, 0) * 100) / 100;
+    const totalCount = rows.reduce((s, r) => s + r.count, 0);
+
+    document.getElementById('freport-result').style.display = 'block';
+    document.getElementById('freport-title').innerHTML =
+        `<i class="fas fa-list"></i> ማጠቃለያ — ከቀን ${fleetEsc(isoToEthText(from))} እስከ ${fleetEsc(isoToEthText(to))}`;
+    document.getElementById('freport-summary-list').innerHTML = rows.map((r, i) => `
+        <tr>
+            <td>${i + 1}</td>
+            <td>${fleetEsc(r.dept)}</td>
+            <td>${r.count}</td>
+            <td>${r.km.toLocaleString('en-US')}</td>
+            <td>${money(r.cost)}</td>
+        </tr>`).join('') + `
+        <tr style="font-weight:bold;">
+            <td></td>
+            <td>ድምር</td>
+            <td>${totalCount}</td>
+            <td>${totalKm.toLocaleString('en-US')}</td>
+            <td>${money(totalCost)}</td>
+        </tr>`;
+
+    const vRows = fleetReportVehicleSummary(trips);
+    const vKm = vRows.reduce((sum, r) => sum + r.km, 0);
+    const vCost = Math.round(vRows.reduce((sum, r) => sum + r.cost, 0) * 100) / 100;
+    const vBody = document.getElementById('freport-vehicle-list');
+    if (vBody) {
+        vBody.innerHTML = vRows.length ? vRows.map((r, i) => `
+            <tr>
+                <td>${i + 1}</td>
+                <td>${fleetEsc(r.type)}</td>
+                <td>${r.count}</td>
+                <td>${r.km.toLocaleString('en-US')}</td>
+                <td>${money(r.cost)}</td>
+            </tr>`).join('') + `
+            <tr style="font-weight:bold;">
+                <td></td>
+                <td>ድምር</td>
+                <td>${vRows.reduce((sum, r) => sum + r.count, 0)}</td>
+                <td>${vKm.toLocaleString('en-US')}</td>
+                <td>${money(vCost)}</td>
+            </tr>` : `<tr><td colspan="5" style="text-align:center; color:#a0aec0;">በዚህ ጊዜ ምንም ጉዞ የለም</td></tr>`;
+    }
+}
+
+function downloadFleetReportExcel() {
+    if (!fleetReportData) { alert('መጀመሪያ "ሪፖርት አውጣ" ይጫኑ'); return; }
+    if (typeof XLSX === 'undefined') { alert('Excel ላይብረሪ አልተጫነም፤ ገጹን ያድሱና እንደገና ይሞክሩ'); return; }
+    const { from, to, trips, includeDetail, deptOrder } = fleetReportData;
+    const ethFrom = isoToEthText(from), ethTo = isoToEthText(to);
+    const aoa = [];
+    let detailLastRow = 0; // Excel row number of the last detail row
+
+    if (includeDetail) {
+        const headers = ['ቀን', 'ዲፓርትመንት', 'የሄዱበት ቦታ', 'የመኪናዉ አይነት', 'የኪሎሜትር ንባብ', 'ኪ.ሜ ልዩነት', 'የነዳጅ ወጪ (ብር)'];
+        const days = daysBetweenISO(from, to);
+        for (let i = 0; i < days; i++) {
+            const day = addDaysISO(from, i);
+            aoa.push(headers);
+            let first = true;
+            deptOrder.forEach(dept => {
+                const list = trips.filter(t => t.tripDate === day && t.department === dept);
+                if (!list.length) {
+                    aoa.push([first ? isoToEthText(day) : '', dept, '*', '*', '*', '*', '*']);
+                    first = false;
+                } else {
+                    list.forEach(t => {
+                        aoa.push([
+                            first ? isoToEthText(day) : '', dept,
+                            t.destination || '*', fleetVehicleLabel(t),
+                            `${t.departureKm}-${t.returnKm}`, t.distanceKm || 0, t.estimatedFuelCost || 0
+                        ]);
+                        first = false;
+                    });
+                }
+            });
+            aoa.push([]);
+        }
+        detailLastRow = aoa.length - 1; // last non-empty row before the trailing blank
+        aoa.push([]);
+    }
+
+    // ----- summary blocks: by department (cols B-E) and, beside it, by vehicle type (cols G-J) -----
+    const deptSummary = fleetReportSummary(trips, deptOrder);
+    const vehSummary = fleetReportVehicleSummary(trips);
+    const dN = deptSummary.length, vN = vehSummary.length;
+
+    aoa.push(['', '', 'ማጠቃለያ', `ከቀን ${ethFrom}-${ethTo}`, '', '', '', 'በመኪና አይነት']);
+    aoa.push(['', 'ተ.ቁ', 'ዲፓርትመንት', 'የተጓዙት ኪ.ሜ', 'የተጠቀሙት ነዳጅ በብር', '', 'ተ.ቁ', 'የመኪና አይነት', 'የተጓዙት ኪ.ሜ', 'የተጠቀሙት ነዳጅ በብር']);
+    const sumFirstRow = aoa.length + 1; // Excel row of the first summary line
+    const dTotalKm = deptSummary.reduce((sum, r) => sum + r.km, 0);
+    const dTotalCost = Math.round(deptSummary.reduce((sum, r) => sum + r.cost, 0) * 100) / 100;
+    const vTotalKm = vehSummary.reduce((sum, r) => sum + r.km, 0);
+    const vTotalCost = Math.round(vehSummary.reduce((sum, r) => sum + r.cost, 0) * 100) / 100;
+    const sumRows = Math.max(dN, vN) + 1;
+    for (let i = 0; i < sumRows; i++) {
+        const row = ['', '', '', '', '', '', '', '', '', ''];
+        if (i < dN) { row[1] = i + 1; row[2] = deptSummary[i].dept; row[3] = deptSummary[i].km; row[4] = deptSummary[i].cost; }
+        else if (i === dN) { row[2] = 'ድምር'; row[3] = dTotalKm; row[4] = dTotalCost; }
+        if (i < vN) { row[6] = i + 1; row[7] = vehSummary[i].type; row[8] = vehSummary[i].km; row[9] = vehSummary[i].cost; }
+        else if (i === vN) { row[7] = 'ድምር'; row[8] = vTotalKm; row[9] = vTotalCost; }
+        aoa.push(row);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+    // Money format only on the detail rows' fuel-cost column (G); the
+    // vehicle summary also lives in column G, so it must not be touched.
+    for (let r = 1; r <= detailLastRow; r++) {
+        const g = ws['G' + r];
+        if (g && typeof g.v === 'number') g.z = '#,##0.00';
+    }
+    // Summary numbers are live formulas over the detail rows when the detail
+    // is included, so editing a trip row in Excel updates the summary too.
+    function setSum(addr, value, formula, fmt) {
+        if (formula) ws[addr] = { t: 'n', v: value, f: formula, z: fmt };
+        else if (ws[addr]) ws[addr].z = fmt;
+    }
+    const L = detailLastRow;
+    deptSummary.forEach((r, i) => {
+        const row = sumFirstRow + i;
+        setSum('D' + row, r.km, includeDetail ? `SUMIF($B$2:$B$${L},C${row},$F$2:$F$${L})` : null, '#,##0');
+        setSum('E' + row, r.cost, includeDetail ? `SUMIF($B$2:$B$${L},C${row},$G$2:$G$${L})` : null, '#,##0.00');
+    });
+    const dTotRow = sumFirstRow + dN;
+    setSum('D' + dTotRow, dTotalKm, `SUM(D${sumFirstRow}:D${dTotRow - 1})`, '#,##0');
+    setSum('E' + dTotRow, dTotalCost, `SUM(E${sumFirstRow}:E${dTotRow - 1})`, '#,##0.00');
+    vehSummary.forEach((r, i) => {
+        const row = sumFirstRow + i;
+        setSum('I' + row, r.km, includeDetail ? `SUMIF($D$2:$D$${L},H${row},$F$2:$F$${L})` : null, '#,##0');
+        setSum('J' + row, r.cost, includeDetail ? `SUMIF($D$2:$D$${L},H${row},$G$2:$G$${L})` : null, '#,##0.00');
+    });
+    const vTotRow = sumFirstRow + vN;
+    if (vN > 0) {
+        setSum('I' + vTotRow, vTotalKm, `SUM(I${sumFirstRow}:I${vTotRow - 1})`, '#,##0');
+        setSum('J' + vTotRow, vTotalCost, `SUM(J${sumFirstRow}:J${vTotRow - 1})`, '#,##0.00');
+    }
+
+    ws['!cols'] = [{ wch: 12 }, { wch: 24 }, { wch: 22 }, { wch: 18 }, { wch: 22 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 22 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'ሪፖርት');
+    XLSX.writeFile(wb, `fleet_report_${ethFrom.replace(/\//g, '-')}_to_${ethTo.replace(/\//g, '-')}.xlsx`);
 }
