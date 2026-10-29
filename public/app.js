@@ -2480,7 +2480,8 @@ async function generateFleetReport() {
 function renderFleetReportPreview() {
     if (!fleetReportData) return;
     const { from, to, trips, deptOrder } = fleetReportData;
-    const rows = fleetReportSummary(trips, deptOrder);
+    // Only departments that actually traveled in the chosen period are listed.
+    const rows = fleetReportSummary(trips, deptOrder).filter(r => r.count > 0);
     const money = n => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const totalKm = rows.reduce((s, r) => s + r.km, 0);
     const totalCost = Math.round(rows.reduce((s, r) => s + r.cost, 0) * 100) / 100;
@@ -2489,7 +2490,9 @@ function renderFleetReportPreview() {
     document.getElementById('freport-result').style.display = 'block';
     document.getElementById('freport-title').innerHTML =
         `<i class="fas fa-list"></i> ማጠቃለያ — ከቀን ${fleetEsc(isoToEthText(from))} እስከ ${fleetEsc(isoToEthText(to))}`;
-    document.getElementById('freport-summary-list').innerHTML = rows.map((r, i) => `
+    document.getElementById('freport-summary-list').innerHTML = !rows.length
+        ? `<tr><td colspan="5" style="text-align:center; color:#a0aec0;">በዚህ ጊዜ ምንም ጉዞ አልተመዘገበም</td></tr>`
+        : rows.map((r, i) => `
         <tr>
             <td>${i + 1}</td>
             <td>${fleetEsc(r.dept)}</td>
@@ -2545,20 +2548,17 @@ function downloadFleetReportExcel() {
             let first = true;
             deptOrder.forEach(dept => {
                 const list = trips.filter(t => t.tripDate === day && t.department === dept);
-                if (!list.length) {
-                    aoa.push([first ? isoToEthText(day) : '', dept, '*', '*', '*', '*', '*']);
+                // Departments with no trip that day are left out entirely.
+                list.forEach(t => {
+                    aoa.push([
+                        first ? isoToEthText(day) : '', dept,
+                        t.destination || '*', fleetVehicleLabel(t),
+                        `${t.departureKm}-${t.returnKm}`, t.distanceKm || 0, t.estimatedFuelCost || 0
+                    ]);
                     first = false;
-                } else {
-                    list.forEach(t => {
-                        aoa.push([
-                            first ? isoToEthText(day) : '', dept,
-                            t.destination || '*', fleetVehicleLabel(t),
-                            `${t.departureKm}-${t.returnKm}`, t.distanceKm || 0, t.estimatedFuelCost || 0
-                        ]);
-                        first = false;
-                    });
-                }
+                });
             });
+            if (first) aoa.push([isoToEthText(day), 'ጉዞ አልተመዘገበም', '', '', '', '', '']);
             aoa.push([]);
         }
         detailLastRow = aoa.length - 1; // last non-empty row before the trailing blank
@@ -2566,7 +2566,7 @@ function downloadFleetReportExcel() {
     }
 
     // ----- summary blocks: by department (cols B-E) and, beside it, by vehicle type (cols G-J) -----
-    const deptSummary = fleetReportSummary(trips, deptOrder);
+    const deptSummary = fleetReportSummary(trips, deptOrder).filter(r => r.count > 0);
     const vehSummary = fleetReportVehicleSummary(trips);
     const dN = deptSummary.length, vN = vehSummary.length;
 
@@ -2608,8 +2608,8 @@ function downloadFleetReportExcel() {
         setSum('E' + row, r.cost, includeDetail ? `SUMIF($B$2:$B$${L},C${row},$G$2:$G$${L})` : null, '#,##0.00');
     });
     const dTotRow = sumFirstRow + dN;
-    setSum('D' + dTotRow, dTotalKm, `SUM(D${sumFirstRow}:D${dTotRow - 1})`, '#,##0');
-    setSum('E' + dTotRow, dTotalCost, `SUM(E${sumFirstRow}:E${dTotRow - 1})`, '#,##0.00');
+    setSum('D' + dTotRow, dTotalKm, dN > 0 ? `SUM(D${sumFirstRow}:D${dTotRow - 1})` : null, '#,##0');
+    setSum('E' + dTotRow, dTotalCost, dN > 0 ? `SUM(E${sumFirstRow}:E${dTotRow - 1})` : null, '#,##0.00');
     vehSummary.forEach((r, i) => {
         const row = sumFirstRow + i;
         setSum('I' + row, r.km, includeDetail ? `SUMIF($D$2:$D$${L},H${row},$F$2:$F$${L})` : null, '#,##0');
