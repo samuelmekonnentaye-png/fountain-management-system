@@ -2540,7 +2540,7 @@ function renderFleetReportPreview() {
 
 // ---- Excel export (professional layout, built with ExcelJS) ----
 const FLEET_REPORT_ORG_NAME = 'Fountain International Trading PLC';
-const FLEET_REPORT_ORG_SUB = 'Life Network Builders Association';
+const FLEET_REPORT_ORG_SUB = 'ፋውንቴን ኢንተርናሽናል ትሬዲንግ ኃ/የተ/የግ/ ማህበር';
 const FLEET_WEEKDAYS_AM = ['እሑድ', 'ሰኞ', 'ማክሰኞ', 'ረቡዕ', 'ሐሙስ', 'ዓርብ', 'ቅዳሜ'];
 
 function fleetWeekdayAm(iso) {
