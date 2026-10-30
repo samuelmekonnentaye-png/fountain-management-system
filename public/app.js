@@ -2531,99 +2531,224 @@ function renderFleetReportPreview() {
     }
 }
 
-function downloadFleetReportExcel() {
-    if (!fleetReportData) { alert('መጀመሪያ "ሪፖርት አውጣ" ይጫኑ'); return; }
-    if (typeof XLSX === 'undefined') { alert('Excel ላይብረሪ አልተጫነም፤ ገጹን ያድሱና እንደገና ይሞክሩ'); return; }
-    const { from, to, trips, includeDetail, deptOrder } = fleetReportData;
+// ---- Excel export (professional layout, built with ExcelJS) ----
+const FLEET_REPORT_ORG_NAME = 'Fountain International Trading PLC';
+const FLEET_REPORT_ORG_SUB = 'Life Network Builders Association';
+const FLEET_WEEKDAYS_AM = ['እሑድ', 'ሰኞ', 'ማክሰኞ', 'ረቡዕ', 'ሐሙስ', 'ዓርብ', 'ቅዳሜ'];
+
+function fleetWeekdayAm(iso) {
+    const p = iso.split('-').map(Number);
+    return FLEET_WEEKDAYS_AM[new Date(p[0], p[1] - 1, p[2], 12).getDay()];
+}
+
+// Pure builder (no DOM): returns an ExcelJS workbook. `logo` is
+// { buffer, extension } or null.
+function buildFleetReportWorkbook(data, logo) {
+    const { from, to, trips, includeDetail, deptOrder } = data;
     const ethFrom = isoToEthText(from), ethTo = isoToEthText(to);
-    const aoa = [];
-    let detailLastRow = 0; // Excel row number of the last detail row
+    const totalDays = daysBetweenISO(from, to);
+    const rangeText = `ከ ${ethFrom} እስከ ${ethTo} ዓ.ም`;
+    const title = totalDays === 7 ? 'ሳምንታዊ የፍሊት ማኔጅመንት ሪፖርት' : 'የፍሊት ማኔጅመንት ሪፖርት';
 
-    if (includeDetail) {
-        const headers = ['ቀን', 'ዲፓርትመንት', 'የሄዱበት ቦታ', 'የመኪናዉ አይነት', 'የኪሎሜትር ንባብ', 'ኪ.ሜ ልዩነት', 'የነዳጅ ወጪ (ብር)'];
-        const days = daysBetweenISO(from, to);
-        for (let i = 0; i < days; i++) {
-            const day = addDaysISO(from, i);
-            aoa.push(headers);
-            let first = true;
-            deptOrder.forEach(dept => {
-                const list = trips.filter(t => t.tripDate === day && t.department === dept);
-                // Departments with no trip that day are left out entirely.
-                list.forEach(t => {
-                    aoa.push([
-                        first ? isoToEthText(day) : '', dept,
-                        t.destination || '*', fleetVehicleLabel(t),
-                        `${t.departureKm}-${t.returnKm}`, t.distanceKm || 0, t.estimatedFuelCost || 0
-                    ]);
-                    first = false;
-                });
-            });
-            if (first) aoa.push([isoToEthText(day), 'ጉዞ አልተመዘገበም', '', '', '', '', '']);
-            aoa.push([]);
+    const NAVY = 'FF1F4E78', LIGHT = 'FFDCE6F1', GREY = 'FFF2F2F2';
+    const side = { style: 'thin', color: { argb: 'FF7F7F7F' } };
+    const BORDER = { top: side, left: side, bottom: side, right: side };
+    const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+    const COLS = 7; // A..G
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = FLEET_REPORT_ORG_NAME;
+    const ws = wb.addWorksheet('ሪፖርት', {
+        pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+            margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },
+        views: [{ showGridLines: false }]
+    });
+    ws.columns = [{ width: 9 }, { width: 26 }, { width: 24 }, { width: 18 }, { width: 22 }, { width: 14 }, { width: 18 }];
+
+    // Write a value into a merged band A:G (or a sub-range) with one style.
+    function band(rowNum, text, opts) {
+        const o = Object.assign({ from: 1, to: COLS, size: 11, bold: true, color: 'FF000000', bg: null, align: 'center', border: false, italic: false, height: null }, opts || {});
+        for (let c = o.from; c <= o.to; c++) {
+            const cell = ws.getCell(rowNum, c);
+            cell.font = { name: 'Calibri', size: o.size, bold: o.bold, italic: o.italic, color: { argb: o.color } };
+            cell.alignment = { horizontal: o.align, vertical: 'middle', wrapText: true };
+            if (o.bg) cell.fill = fill(o.bg);
+            if (o.border) cell.border = BORDER;
         }
-        detailLastRow = aoa.length - 1; // last non-empty row before the trailing blank
-        aoa.push([]);
+        ws.getCell(rowNum, o.from).value = text;
+        if (o.to > o.from) ws.mergeCells(rowNum, o.from, rowNum, o.to);
+        if (o.height) ws.getRow(rowNum).height = o.height;
+    }
+    function headerRow(rowNum, labels) {
+        labels.forEach((text, i) => {
+            const cell = ws.getCell(rowNum, i + 1);
+            cell.value = text;
+            cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = fill(NAVY);
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            cell.border = BORDER;
+        });
+        ws.getRow(rowNum).height = 24;
+    }
+    function bodyCell(rowNum, col, value, opts) {
+        const o = Object.assign({ align: 'center', fmt: null, bold: false, bg: null }, opts || {});
+        const cell = ws.getCell(rowNum, col);
+        cell.value = value;
+        cell.font = { name: 'Calibri', size: 11, bold: o.bold };
+        cell.alignment = { horizontal: o.align, vertical: 'middle', wrapText: true };
+        cell.border = BORDER;
+        if (o.fmt) cell.numFmt = o.fmt;
+        if (o.bg) cell.fill = fill(o.bg);
+        return cell;
     }
 
-    // ----- summary blocks: by department (cols B-E) and, beside it, by vehicle type (cols G-J) -----
-    const deptSummary = fleetReportSummary(trips, deptOrder).filter(r => r.count > 0);
-    const vehSummary = fleetReportVehicleSummary(trips);
-    const dN = deptSummary.length, vN = vehSummary.length;
-
-    aoa.push(['', '', 'ማጠቃለያ', `ከቀን ${ethFrom}-${ethTo}`, '', '', '', 'በመኪና አይነት']);
-    aoa.push(['', 'ተ.ቁ', 'ዲፓርትመንት', 'የተጓዙት ኪ.ሜ', 'የተጠቀሙት ነዳጅ በብር', '', 'ተ.ቁ', 'የመኪና አይነት', 'የተጓዙት ኪ.ሜ', 'የተጠቀሙት ነዳጅ በብር']);
-    const sumFirstRow = aoa.length + 1; // Excel row of the first summary line
-    const dTotalKm = deptSummary.reduce((sum, r) => sum + r.km, 0);
-    const dTotalCost = Math.round(deptSummary.reduce((sum, r) => sum + r.cost, 0) * 100) / 100;
-    const vTotalKm = vehSummary.reduce((sum, r) => sum + r.km, 0);
-    const vTotalCost = Math.round(vehSummary.reduce((sum, r) => sum + r.cost, 0) * 100) / 100;
-    const sumRows = Math.max(dN, vN) + 1;
-    for (let i = 0; i < sumRows; i++) {
-        const row = ['', '', '', '', '', '', '', '', '', ''];
-        if (i < dN) { row[1] = i + 1; row[2] = deptSummary[i].dept; row[3] = deptSummary[i].km; row[4] = deptSummary[i].cost; }
-        else if (i === dN) { row[2] = 'ድምር'; row[3] = dTotalKm; row[4] = dTotalCost; }
-        if (i < vN) { row[6] = i + 1; row[7] = vehSummary[i].type; row[8] = vehSummary[i].km; row[9] = vehSummary[i].cost; }
-        else if (i === vN) { row[7] = 'ድምር'; row[8] = vTotalKm; row[9] = vTotalCost; }
-        aoa.push(row);
+    // ---------- letterhead ----------
+    band(1, FLEET_REPORT_ORG_NAME, { from: 2, size: 20, color: NAVY, height: 32 });
+    band(2, FLEET_REPORT_ORG_SUB, { from: 2, size: 13, color: 'FF595959', height: 22 });
+    band(3, title, { size: 15, color: 'FFFFFFFF', bg: NAVY, height: 28 });
+    band(4, rangeText, { size: 12, bg: LIGHT, border: true, height: 22 });
+    ws.getRow(5).height = 8;
+    if (logo) {
+        const imgId = wb.addImage({ buffer: logo.buffer, extension: logo.extension });
+        ws.addImage(imgId, { tl: { col: 0.12, row: 0.1 }, ext: { width: 62, height: 62 } });
     }
 
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    let r = 6;
+    let rangeFirst = null, rangeLast = null; // detail rows, used by the summary formulas
 
-    // Money format only on the detail rows' fuel-cost column (G); the
-    // vehicle summary also lives in column G, so it must not be touched.
-    for (let r = 1; r <= detailLastRow; r++) {
-        const g = ws['G' + r];
-        if (g && typeof g.v === 'number') g.z = '#,##0.00';
-    }
-    // Summary numbers are live formulas over the detail rows when the detail
-    // is included, so editing a trip row in Excel updates the summary too.
-    function setSum(addr, value, formula, fmt) {
-        if (formula) ws[addr] = { t: 'n', v: value, f: formula, z: fmt };
-        else if (ws[addr]) ws[addr].z = fmt;
-    }
-    const L = detailLastRow;
-    deptSummary.forEach((r, i) => {
-        const row = sumFirstRow + i;
-        setSum('D' + row, r.km, includeDetail ? `SUMIF($B$2:$B$${L},C${row},$F$2:$F$${L})` : null, '#,##0');
-        setSum('E' + row, r.cost, includeDetail ? `SUMIF($B$2:$B$${L},C${row},$G$2:$G$${L})` : null, '#,##0.00');
-    });
-    const dTotRow = sumFirstRow + dN;
-    setSum('D' + dTotRow, dTotalKm, dN > 0 ? `SUM(D${sumFirstRow}:D${dTotRow - 1})` : null, '#,##0');
-    setSum('E' + dTotRow, dTotalCost, dN > 0 ? `SUM(E${sumFirstRow}:E${dTotRow - 1})` : null, '#,##0.00');
-    vehSummary.forEach((r, i) => {
-        const row = sumFirstRow + i;
-        setSum('I' + row, r.km, includeDetail ? `SUMIF($D$2:$D$${L},H${row},$F$2:$F$${L})` : null, '#,##0');
-        setSum('J' + row, r.cost, includeDetail ? `SUMIF($D$2:$D$${L},H${row},$G$2:$G$${L})` : null, '#,##0.00');
-    });
-    const vTotRow = sumFirstRow + vN;
-    if (vN > 0) {
-        setSum('I' + vTotRow, vTotalKm, `SUM(I${sumFirstRow}:I${vTotRow - 1})`, '#,##0');
-        setSum('J' + vTotRow, vTotalCost, `SUM(J${sumFirstRow}:J${vTotRow - 1})`, '#,##0.00');
+    // ---------- one table per day ----------
+    if (includeDetail) {
+        for (let i = 0; i < totalDays; i++) {
+            const day = addDaysISO(from, i);
+            band(r, `ቀን፦ ${isoToEthText(day)}  (${fleetWeekdayAm(day)})`, { size: 12, bg: LIGHT, align: 'left', border: true, height: 22 });
+            r++;
+            headerRow(r, ['ተ.ቁ', 'ዲፓርትመንት', 'የሄዱበት ቦታ', 'የመኪናዉ አይነት', 'የኪሎሜትር ንባብ', 'ኪ.ሜ ልዩነት', 'የነዳጅ ወጪ (ብር)']);
+            r++;
+            const dayTrips = [];
+            deptOrder.forEach(dept => {
+                trips.filter(t => t.tripDate === day && t.department === dept).forEach(t => dayTrips.push(t));
+            });
+            if (!dayTrips.length) {
+                band(r, 'ጉዞ አልተመዘገበም', { bold: false, italic: true, color: 'FF7F7F7F', border: true, height: 20 });
+                r += 2;
+                continue;
+            }
+            const firstRow = r;
+            dayTrips.forEach((t, idx) => {
+                bodyCell(r, 1, idx + 1);
+                bodyCell(r, 2, t.department, { align: 'left' });
+                bodyCell(r, 3, t.destination || '*', { align: 'left' });
+                bodyCell(r, 4, fleetVehicleLabel(t));
+                bodyCell(r, 5, `${t.departureKm}-${t.returnKm}`);
+                bodyCell(r, 6, t.distanceKm || 0, { fmt: '#,##0' });
+                bodyCell(r, 7, t.estimatedFuelCost || 0, { fmt: '#,##0.00', align: 'right' });
+                if (rangeFirst === null) rangeFirst = r;
+                rangeLast = r;
+                r++;
+            });
+            const dayKm = dayTrips.reduce((s, t) => s + (t.distanceKm || 0), 0);
+            const dayCost = Math.round(dayTrips.reduce((s, t) => s + (t.estimatedFuelCost || 0), 0) * 100) / 100;
+            for (let c = 1; c <= 5; c++) bodyCell(r, c, c === 1 ? 'የቀኑ ድምር' : null, { align: 'right', bold: true, bg: GREY });
+            ws.mergeCells(r, 1, r, 5);
+            bodyCell(r, 6, { formula: `SUM(F${firstRow}:F${r - 1})`, result: dayKm }, { fmt: '#,##0', bold: true, bg: GREY });
+            bodyCell(r, 7, { formula: `SUM(G${firstRow}:G${r - 1})`, result: dayCost }, { fmt: '#,##0.00', bold: true, bg: GREY, align: 'right' });
+            r += 2;
+        }
     }
 
-    ws['!cols'] = [{ wch: 12 }, { wch: 24 }, { wch: 22 }, { wch: 18 }, { wch: 22 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 22 }];
+    // ---------- summary ----------
+    // Start the summary on a fresh printed page when the daily tables are long.
+    if (includeDetail && r > 25) ws.getRow(r - 1).addPageBreak();
+    band(r, `ማጠቃለያ — ${rangeText}`, { size: 13, color: 'FFFFFFFF', bg: NAVY, height: 26 });
+    r += 2;
+    const useFormulas = includeDetail && rangeFirst !== null;
+    const B = `$B$${rangeFirst}:$B$${rangeLast}`, D = `$D$${rangeFirst}:$D$${rangeLast}`;
+    const F = `$F$${rangeFirst}:$F$${rangeLast}`, G = `$G$${rangeFirst}:$G$${rangeLast}`;
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'ሪፖርት');
-    XLSX.writeFile(wb, `fleet_report_${ethFrom.replace(/\//g, '-')}_to_${ethTo.replace(/\//g, '-')}.xlsx`);
+    function summaryTable(heading, nameHeader, rows, critRange) {
+        band(r, heading, { size: 12, bg: LIGHT, align: 'left', border: true, height: 22, to: 5 });
+        r++;
+        headerRow(r, ['ተ.ቁ', nameHeader, 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'የተጠቀሙት ነዳጅ በብር']);
+        r++;
+        if (!rows.length) {
+            band(r, 'ጉዞ አልተመዘገበም', { bold: false, italic: true, color: 'FF7F7F7F', border: true, to: 5 });
+            r += 2;
+            return;
+        }
+        const first = r;
+        rows.forEach((row, i) => {
+            bodyCell(r, 1, i + 1);
+            bodyCell(r, 2, row.name, { align: 'left' });
+            if (useFormulas) {
+                bodyCell(r, 3, { formula: `COUNTIF(${critRange},B${r})`, result: row.count });
+                bodyCell(r, 4, { formula: `SUMIF(${critRange},B${r},${F})`, result: row.km }, { fmt: '#,##0' });
+                bodyCell(r, 5, { formula: `SUMIF(${critRange},B${r},${G})`, result: row.cost }, { fmt: '#,##0.00', align: 'right' });
+            } else {
+                bodyCell(r, 3, row.count);
+                bodyCell(r, 4, row.km, { fmt: '#,##0' });
+                bodyCell(r, 5, row.cost, { fmt: '#,##0.00', align: 'right' });
+            }
+            ws.getRow(r).height = 20;
+            r++;
+        });
+        const cnt = rows.reduce((s, x) => s + x.count, 0);
+        const km = rows.reduce((s, x) => s + x.km, 0);
+        const cost = Math.round(rows.reduce((s, x) => s + x.cost, 0) * 100) / 100;
+        bodyCell(r, 1, null, { bg: GREY });
+        bodyCell(r, 2, 'ድምር', { align: 'left', bold: true, bg: GREY });
+        bodyCell(r, 3, { formula: `SUM(C${first}:C${r - 1})`, result: cnt }, { bold: true, bg: GREY });
+        bodyCell(r, 4, { formula: `SUM(D${first}:D${r - 1})`, result: km }, { fmt: '#,##0', bold: true, bg: GREY });
+        bodyCell(r, 5, { formula: `SUM(E${first}:E${r - 1})`, result: cost }, { fmt: '#,##0.00', bold: true, bg: GREY, align: 'right' });
+        ws.getRow(r).height = 20;
+        r += 2;
+    }
+
+    const deptRows = fleetReportSummary(trips, deptOrder).filter(x => x.count > 0).map(x => ({ name: x.dept, count: x.count, km: x.km, cost: x.cost }));
+    const vehRows = fleetReportVehicleSummary(trips).map(x => ({ name: x.type, count: x.count, km: x.km, cost: x.cost }));
+    summaryTable('በዲፓርትመንት', 'ዲፓርትመንት', deptRows, B);
+    summaryTable('በመኪና አይነት', 'የመኪና አይነት', vehRows, D);
+
+    band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
+    return wb;
+}
+
+async function loadFleetReportLogo() {
+    try {
+        const res = await fetch('/images/logo.png');
+        if (!res.ok) return null;
+        const buffer = await res.arrayBuffer();
+        const b = new Uint8Array(buffer);
+        // The company logo file is named .png but may really be a JPEG.
+        const extension = (b[0] === 0x89 && b[1] === 0x50) ? 'png' : (b[0] === 0xFF && b[1] === 0xD8) ? 'jpeg' : null;
+        return extension ? { buffer, extension } : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function downloadFleetReportExcel() {
+    if (!fleetReportData) { alert('መጀመሪያ "ሪፖርት አውጣ" ይጫኑ'); return; }
+    if (typeof ExcelJS === 'undefined') { alert('Excel ላይብረሪ አልተጫነም፤ ኢንተርኔትዎን አረጋግጠው ገጹን ያድሱና እንደገና ይሞክሩ'); return; }
+    const btn = document.getElementById('freport-download-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const logo = await loadFleetReportLogo();
+        const wb = buildFleetReportWorkbook(fleetReportData, logo);
+        const buf = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const ethFrom = isoToEthText(fleetReportData.from).replace(/\//g, '-');
+        const ethTo = isoToEthText(fleetReportData.to).replace(/\//g, '-');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `fleet_report_${ethFrom}_to_${ethTo}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    } catch (err) {
+        console.error('Fleet report export error:', err);
+        alert('Excel ፋይሉን ማዘጋጀት አልተቻለም');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
