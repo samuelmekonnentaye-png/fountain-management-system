@@ -112,6 +112,11 @@ const userSchema = new mongoose.Schema({
     role: { type: String, default: 'Employee' },
     status: { type: String, default: 'pending' }, // pending, approved, rejected[cite: 4]
     permissions: { type: [String], default: ['prepare'] },
+    // Which sections (modules) this person may open and use. A MISSING value
+    // (accounts created before this feature) means "everything" so nobody is
+    // locked out on upgrade; an array — even an empty one — means exactly
+    // those modules. Admins always have every module.
+    access: { type: [String], default: undefined },
     // "Forgot password" flow: a short-lived 6-digit code emailed to the
     // account's address. Only its hash is stored (same idea as a password),
     // and it expires after RESET_CODE_TTL_MS so an old email can't be reused.
@@ -144,6 +149,75 @@ function requirePermission(perm) {
             res.status(500).json({ error: 'የፈቃድ ማረጋገጫ አልተሳካም' });
         }
     };
+}
+
+// ===== Per-module access (which sections a user may see / use) =====
+const ACCESS_MODULES = [
+    'dashboard', 'payments', 'contracts', 'gallery', 'report', 'signature', 'trash',
+    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report'
+];
+
+function effectiveAccess(userDoc) {
+    if (!userDoc) return [];
+    if (userDoc.role === 'Admin') return ACCESS_MODULES.slice();
+    if (!Array.isArray(userDoc.access)) return ACCESS_MODULES.slice(); // legacy account: unrestricted
+    return userDoc.access.filter(k => ACCESS_MODULES.includes(k));
+}
+// Route guard: the caller needs at least ONE of the listed modules.
+function requireModule(...mods) {
+    return async (req, res, next) => {
+        try {
+            const user = req.authUserDoc || await User.findById(req.authUser.id);
+            if (!user) return res.status(401).json({ error: 'ተጠቃሚው አልተገኘም' });
+            req.authUserDoc = user;
+            const have = effectiveAccess(user);
+            if (!mods.some(m => have.includes(m))) {
+                return res.status(403).json({ error: 'ይህን ክፍል ለመጠቀም ፈቃድ የለዎትም' });
+            }
+            next();
+        } catch (err) {
+            logError('requireModule error:', err);
+            res.status(500).json({ error: 'የሰርቨር ስህተት' });
+        }
+    };
+}
+// A record is either a payment (category 'ክፍያ') or a contract (anything else).
+function recordModule(category) {
+    return category === 'ክፍያ' ? 'payments' : 'contracts';
+}
+// Which record categories this user may READ (the dashboard and the finance
+// report summarise both kinds, so those modules also let them see them).
+function readableCategories(userDoc) {
+    const have = effectiveAccess(userDoc);
+    const pay = ['payments', 'dashboard', 'report'].some(m => have.includes(m));
+    const con = ['contracts', 'gallery', 'dashboard', 'report'].some(m => have.includes(m));
+    return { pay, con };
+}
+function filterRecordsByAccess(userDoc, list, getCategory) {
+    if (!userDoc || userDoc.role === 'Admin') return list;
+    const { pay, con } = readableCategories(userDoc);
+    return list.filter(r => (getCategory(r) === 'ክፍያ' ? pay : con));
+}
+// Add/edit a payment or contract: needs the matching module. For edits the
+// STORED record's category decides, so the request body can't lie about it.
+async function requireRecordWrite(req, res, next) {
+    try {
+        const user = req.authUserDoc || await User.findById(req.authUser.id);
+        if (!user) return res.status(401).json({ error: 'ተጠቃሚው አልተገኘም' });
+        req.authUserDoc = user;
+        let category = req.body && req.body.category;
+        if (req.params && req.params.id) {
+            const existing = await Record.findById(req.params.id);
+            if (existing) category = existing.category;
+        }
+        if (!effectiveAccess(user).includes(recordModule(category))) {
+            return res.status(403).json({ error: 'ይህን ክፍል ለመጠቀም ፈቃድ የለዎትም' });
+        }
+        next();
+    } catch (err) {
+        logError('requireRecordWrite error:', err);
+        res.status(500).json({ error: 'የሰርቨር ስህተት' });
+    }
 }
 
 // A signature record can be attached to a payment/contract as "ያዘጋጀው" (prepared
@@ -409,7 +483,7 @@ app.post('/api/users/login', async (req, res) => {
             return res.status(403).json({ error: 'ይህ አካውንት ተቀባይነት አላገኘም (Rejected)።' });
         }
         const token = signToken({ id: user._id.toString(), role: user.role, exp: Date.now() + TOKEN_TTL_MS });
-        res.json({ id: user._id, fullName: user.fullName, username: user.username, email: user.email, role: user.role, token });
+        res.json({ id: user._id, fullName: user.fullName, username: user.username, email: user.email, role: user.role, access: effectiveAccess(user), token });
     } catch (err) {
         // Logged so the real cause (DB connection drop, bad data, etc.) is
         // visible in the server console instead of only showing a generic
@@ -535,7 +609,7 @@ app.post('/api/users/reset-password', async (req, res) => {
 // by simply sending status:'approved' in the request body — now that's only
 // honored if the request actually carries a valid Admin token.
 app.post('/api/users/register', async (req, res) => {
-    const { fullName, username, password, email, role, status, permissions } = req.body;
+    const { fullName, username, password, email, role, status, permissions, access } = req.body;
     try {
         const existing = await User.findOne({ username });
         if (existing) return res.status(400).json({ error: 'ይህ የተጠቃሚ ስም አስቀድሞ ተይዟል!' });
@@ -556,6 +630,12 @@ app.post('/api/users/register', async (req, res) => {
             if (finalPermissions.length === 0) finalPermissions = ['prepare'];
         }
 
+        // Only an Admin chooses which modules a new account can open. A public
+        // self-signup starts with none until an Admin grants them.
+        const finalAccess = (requesterIsAdmin && Array.isArray(access))
+            ? access.filter(k => ACCESS_MODULES.includes(k))
+            : [];
+
         const newUser = new User({ 
             fullName, 
             username, 
@@ -563,7 +643,8 @@ app.post('/api/users/register', async (req, res) => {
             email, 
             role: requesterIsAdmin ? (role || 'Employee') : 'Employee',
             status: (status === 'approved' && requesterIsAdmin) ? 'approved' : 'pending',
-            permissions: finalPermissions
+            permissions: finalPermissions,
+            access: finalAccess
         });
         await newUser.save();
 
@@ -630,6 +711,33 @@ app.put('/api/users/permissions/:id', requireAdmin, async (req, res) => {
 });
 
 // API 3.2: Delete User (Admin only) — was missing; the "ሰርዝ" button in the dashboard already relies on this.
+// API 3.1c: Which modules the logged-in user may open (re-checked by the
+// browser on every page load, so an Admin's change applies at the next refresh).
+app.get('/api/users/me/access', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findById(req.authUser.id);
+        if (!user) return res.status(401).json({ error: 'ተጠቃሚው አልተገኘም' });
+        res.json({ access: effectiveAccess(user), role: user.role });
+    } catch (err) {
+        logError('Get my access error:', err);
+        res.status(500).json({ error: 'መዳረሻን ማምጣት አልተቻለም' });
+    }
+});
+
+// API 3.1d: Set the modules a user may open (Admin only).
+app.put('/api/users/access/:id', requireAdmin, async (req, res) => {
+    try {
+        if (!Array.isArray(req.body.access)) return res.status(400).json({ error: 'ልክ ያልሆነ ጥያቄ' });
+        const access = Array.from(new Set(req.body.access.filter(k => ACCESS_MODULES.includes(k))));
+        const user = await User.findByIdAndUpdate(req.params.id, { access }, { new: true, fields: '-password' });
+        if (!user) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም' });
+        res.json(user);
+    } catch (err) {
+        logError('Update access error:', err);
+        res.status(500).json({ error: 'መዳረሻን ማዘመን አልተቻለም' });
+    }
+});
+
 app.delete('/api/users/:id', requireAdmin, async (req, res) => {
     try {
         const deleted = await User.findByIdAndDelete(req.params.id);
@@ -702,7 +810,7 @@ app.get('/api/records/:userId', requireAuth, async (req, res) => {
                 ]
             });
         }
-        res.json(records);
+        res.json(filterRecordsByAccess(user, records, r => r.category));
     } catch (err) {
         logError('Get records error:', err);
         res.status(500).json({ error: 'መረጃ ማምጣት አልተቻለም' });
@@ -731,7 +839,9 @@ app.get('/api/trash/:userId', requireAuth, async (req, res) => {
                 ]
             }).sort({ deletedAt: -1 });
         }
-        res.json(records);
+        // Trash is its own module; without it the list is simply empty.
+        if (user && user.role !== 'Admin' && !effectiveAccess(user).includes('trash')) return res.json([]);
+        res.json(filterRecordsByAccess(user, records, r => r.category));
     } catch (err) {
         logError('Get trash error:', err);
         res.status(500).json({ error: 'ትራሽን ማምጣት አልተቻለም' });
@@ -740,7 +850,7 @@ app.get('/api/trash/:userId', requireAuth, async (req, res) => {
 
 // API 5.2: Restore a soft-deleted record — brings it back into every normal
 // list and back into financial totals, exactly as it was before deletion.
-app.post('/api/trash/:id/restore', requireAuth, requirePermission('prepare'), async (req, res) => {
+app.post('/api/trash/:id/restore', requireAuth, requireModule('trash'), requirePermission('prepare'), async (req, res) => {
     try {
         const record = await Record.findById(req.params.id);
         if (!record) return res.status(404).json({ error: 'መዝገቡ አልተገኘም' });
@@ -818,7 +928,9 @@ app.get('/api/records/financial-events/:userId', requireAuth, async (req, res) =
             ...currentRecords.map(toEvent),
             ...historySnapshots.map(h => toEvent(h.snapshot))
         ];
-        res.json(events);
+        // Totals feed the dashboard and the finance report only.
+        if (user && user.role !== 'Admin' && !['dashboard', 'report'].some(m => effectiveAccess(user).includes(m))) return res.json([]);
+        res.json(filterRecordsByAccess(user, events, e => e.category));
     } catch (err) {
         logError('Get financial events error:', err);
         res.status(500).json({ error: 'የፋይናንስ መረጃ ማምጣት አልተቻለም' });
@@ -838,7 +950,7 @@ function validateRecordInput(body) {
 }
 
 // API 6: Add Record
-app.post('/api/records', requireAuth, requirePermission('prepare'), upload.single('file'), async (req, res) => {
+app.post('/api/records', requireAuth, requirePermission('prepare'), upload.single('file'), requireRecordWrite, async (req, res) => {
     try {
         const validationError = validateRecordInput(req.body);
         if (validationError) return res.status(400).json({ error: validationError });
@@ -858,7 +970,7 @@ app.post('/api/records', requireAuth, requirePermission('prepare'), upload.singl
 });
 
 // API 7: Update Record (also used to "renew" a record with a fresh due date)
-app.put('/api/records/:id', requireAuth, requirePermission('prepare'), upload.single('file'), async (req, res) => {
+app.put('/api/records/:id', requireAuth, requirePermission('prepare'), upload.single('file'), requireRecordWrite, async (req, res) => {
     try {
         const validationError = validateRecordInput(req.body);
         if (validationError) return res.status(400).json({ error: validationError });
@@ -885,7 +997,7 @@ app.put('/api/records/:id', requireAuth, requirePermission('prepare'), upload.si
 });
 
 // API 7.1: View a record's renewal history
-app.get('/api/records/:id/history', requireAuth, async (req, res) => {
+app.get('/api/records/:id/history', requireAuth, requireModule('payments', 'contracts', 'gallery', 'dashboard', 'report'), async (req, res) => {
     try {
         const history = await RecordHistory.find({ recordId: req.params.id }).sort({ archivedAt: -1 });
         res.json(history);
@@ -927,6 +1039,9 @@ app.delete('/api/records/:id', requireAuth, requirePermission('prepare'), async 
     try {
         const record = await Record.findById(req.params.id);
         if (!record) return res.status(404).json({ error: 'መዝገቡ አልተገኘም' });
+        if (!effectiveAccess(req.authUserDoc).includes(recordModule(record.category))) {
+            return res.status(403).json({ error: 'ይህን ክፍል ለመጠቀም ፈቃድ የለዎትም' });
+        }
         if (req.authUser.role !== 'Admin' && record.userId !== req.authUser.id) {
             return res.status(403).json({ error: 'ይህን መዝገብ መሰረዝ አይችሉም' });
         }
@@ -1316,7 +1431,7 @@ async function uploadFleetFile(file, folder) {
 }
 
 // ---------- Vehicles ----------
-app.get('/api/fleet/vehicles', requireAuth, async (req, res) => {
+app.get('/api/fleet/vehicles', requireAuth, requireModule('fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report'), async (req, res) => {
     try {
         const list = await Vehicle.find({ isDeleted: { $ne: true } }).sort({ createdAt: -1 });
         res.json(list);
@@ -1352,7 +1467,7 @@ function buildVehicleData(body) {
     };
 }
 
-app.post('/api/fleet/vehicles', requireAuth, requirePermission('prepare'), upload.single('photo'), async (req, res) => {
+app.post('/api/fleet/vehicles', requireAuth, requireModule('fleet_vehicles'), requirePermission('prepare'), upload.single('photo'), async (req, res) => {
     try {
         const data = buildVehicleData(req.body);
         if (!data.plateNumber) return res.status(400).json({ error: 'የሰሌዳ ቁጥር ያስፈልጋል' });
@@ -1377,7 +1492,7 @@ app.post('/api/fleet/vehicles', requireAuth, requirePermission('prepare'), uploa
     }
 });
 
-app.put('/api/fleet/vehicles/:id', requireAuth, requirePermission('prepare'), upload.single('photo'), async (req, res) => {
+app.put('/api/fleet/vehicles/:id', requireAuth, requireModule('fleet_vehicles'), requirePermission('prepare'), upload.single('photo'), async (req, res) => {
     try {
         const data = buildVehicleData(req.body);
         if (!data.plateNumber) return res.status(400).json({ error: 'የሰሌዳ ቁጥር ያስፈልጋል' });
@@ -1402,7 +1517,7 @@ app.put('/api/fleet/vehicles/:id', requireAuth, requirePermission('prepare'), up
     }
 });
 
-app.delete('/api/fleet/vehicles/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+app.delete('/api/fleet/vehicles/:id', requireAuth, requireModule('fleet_vehicles'), requirePermission('prepare'), async (req, res) => {
     try {
         const v = await Vehicle.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
         if (!v) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
@@ -1425,7 +1540,7 @@ app.post('/api/fleet/vehicles/:id/restore', requireAdmin, async (req, res) => {
 });
 
 // ---------- Fuel price settings & departments ----------
-app.get('/api/fleet/settings', requireAuth, async (req, res) => {
+app.get('/api/fleet/settings', requireAuth, requireModule('fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report'), async (req, res) => {
     try {
         const s = await getFleetSettings();
         res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter });
@@ -1450,12 +1565,12 @@ app.put('/api/fleet/settings', requireAdmin, async (req, res) => {
         res.status(500).json({ error: 'ማስቀመጥ አልተቻለም' });
     }
 });
-app.get('/api/fleet/departments', requireAuth, (req, res) => {
+app.get('/api/fleet/departments', requireAuth, requireModule('fleet_trips', 'fleet_report'), (req, res) => {
     res.json(FLEET_DEPARTMENTS);
 });
 
 // ---------- Trips (የአጠቃቀም ምዝገባ) ----------
-app.get('/api/fleet/trips', requireAuth, async (req, res) => {
+app.get('/api/fleet/trips', requireAuth, requireModule('fleet_trips', 'fleet_report'), async (req, res) => {
     try {
         // Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD — used by the weekly/range
         // report. Without them the list behaves exactly as before.
@@ -1476,7 +1591,7 @@ app.get('/api/fleet/trips', requireAuth, async (req, res) => {
         res.status(500).json({ error: 'የአጠቃቀም ምዝገባ ማምጣት አልተቻለም' });
     }
 });
-app.post('/api/fleet/trips', requireAuth, requirePermission('prepare'), async (req, res) => {
+app.post('/api/fleet/trips', requireAuth, requireModule('fleet_trips'), requirePermission('prepare'), async (req, res) => {
     try {
         const { department, vehicleId, destination, tripDate, departureTime } = req.body;
         const departureKm = toNum(req.body.departureKm, NaN);
@@ -1518,7 +1633,7 @@ app.post('/api/fleet/trips', requireAuth, requirePermission('prepare'), async (r
         res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
     }
 });
-app.delete('/api/fleet/trips/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+app.delete('/api/fleet/trips/:id', requireAuth, requireModule('fleet_trips'), requirePermission('prepare'), async (req, res) => {
     try {
         await Trip.findByIdAndDelete(req.params.id);
         res.json({ message: 'ተሰርዟል' });
@@ -1529,7 +1644,7 @@ app.delete('/api/fleet/trips/:id', requireAuth, requirePermission('prepare'), as
 });
 
 // ---------- Maintenance (with prepare → send → approve workflow) ----------
-app.get('/api/fleet/maintenance', requireAuth, async (req, res) => {
+app.get('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance'), async (req, res) => {
     try {
         const list = await Maintenance.find().sort({ date: -1, createdAt: -1 }).limit(500);
         res.json(list);
@@ -1538,7 +1653,7 @@ app.get('/api/fleet/maintenance', requireAuth, async (req, res) => {
         res.status(500).json({ error: 'የጥገና ምዝገባ ማምጣት አልተቻለም' });
     }
 });
-app.post('/api/fleet/maintenance', requireAuth, requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
+app.post('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance'), requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
     try {
         const { vehicleId, date, maintenanceType, garage, description, nextServiceDate } = req.body;
         if (!vehicleId || !date) return res.status(400).json({ error: 'ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
@@ -1577,7 +1692,7 @@ app.post('/api/fleet/maintenance', requireAuth, requirePermission('prepare'), up
         res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
     }
 });
-app.delete('/api/fleet/maintenance/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+app.delete('/api/fleet/maintenance/:id', requireAuth, requireModule('fleet_maintenance'), requirePermission('prepare'), async (req, res) => {
     try {
         const item = await Maintenance.findById(req.params.id);
         if (!item) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
@@ -1593,7 +1708,7 @@ app.delete('/api/fleet/maintenance/:id', requireAuth, requirePermission('prepare
 });
 // Same rules as POST /api/records/:id/sign: signature password every time,
 // preparer must pick one approver, only that approver (or an Admin) approves.
-app.post('/api/fleet/maintenance/:id/sign', requireAuth, async (req, res) => {
+app.post('/api/fleet/maintenance/:id/sign', requireAuth, requireModule('fleet_maintenance'), async (req, res) => {
     try {
         const { slot, signaturePassword, sendToApproverId } = req.body;
         if (!['prepared', 'approved'].includes(slot)) return res.status(400).json({ error: 'ልክ ያልሆነ የፊርማ ቦታ' });
@@ -1671,7 +1786,7 @@ app.post('/api/fleet/maintenance/:id/sign', requireAuth, async (req, res) => {
 });
 
 // ---------- Fuel log (actual receipts) ----------
-app.get('/api/fleet/fuel-logs', requireAuth, async (req, res) => {
+app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel'), async (req, res) => {
     try {
         const list = await FuelLog.find().sort({ date: -1, createdAt: -1 }).limit(500);
         res.json(list);
@@ -1680,7 +1795,7 @@ app.get('/api/fleet/fuel-logs', requireAuth, async (req, res) => {
         res.status(500).json({ error: 'የነዳጅ ምዝገባ ማምጣት አልተቻለም' });
     }
 });
-app.post('/api/fleet/fuel-logs', requireAuth, requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
+app.post('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel'), requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
     try {
         const { vehicleId, date, station } = req.body;
         if (!vehicleId || !date) return res.status(400).json({ error: 'ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
@@ -1717,7 +1832,7 @@ app.post('/api/fleet/fuel-logs', requireAuth, requirePermission('prepare'), uplo
         res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
     }
 });
-app.delete('/api/fleet/fuel-logs/:id', requireAuth, requirePermission('prepare'), async (req, res) => {
+app.delete('/api/fleet/fuel-logs/:id', requireAuth, requireModule('fleet_fuel'), requirePermission('prepare'), async (req, res) => {
     try {
         await FuelLog.findByIdAndDelete(req.params.id);
         res.json({ message: 'ተሰርዟል' });
