@@ -209,7 +209,7 @@
                 <li id="menu-report" class="sidebar-item" onclick="showSection('report-sec', 'menu-report')"><i class="fas fa-chart-line"></i> የፋይናንስ ሪፖርት</li>
                 <li id="menu-signature" class="sidebar-item" onclick="showSection('signature-sec', 'menu-signature')"><i class="fas fa-signature"></i> የፊርማ ምዝገባ</li>
                 <li id="menu-trash" class="sidebar-item" onclick="showSection('trash-sec', 'menu-trash')"><i class="fas fa-trash"></i> ትራሽ (Trash)</li>
-                <li style="padding: 12px 20px 4px; font-size:11.5px; color:rgba(255,255,255,0.4); letter-spacing:0.5px;">ፍሊት ማኔጅመንት</li>
+                <li id="menu-fleet-label" style="padding: 12px 20px 4px; font-size:11.5px; color:rgba(255,255,255,0.4); letter-spacing:0.5px;">ፍሊት ማኔጅመንት</li>
                 <li id="menu-fleet-vehicles" class="sidebar-item" onclick="showSection('fleet-vehicles-sec', 'menu-fleet-vehicles')"><i class="fas fa-truck-pickup"></i> ተሽከርካሪዎች</li>
                 <li id="menu-fleet-trips" class="sidebar-item" onclick="showSection('fleet-trips-sec', 'menu-fleet-trips')"><i class="fas fa-road"></i> የአጠቃቀም ምዝገባ</li>
                 <li id="menu-fleet-maintenance" class="sidebar-item" onclick="showSection('fleet-maintenance-sec', 'menu-fleet-maintenance')"><i class="fas fa-tools"></i> ጥገና ምዝገባ</li>
@@ -986,6 +986,14 @@
             </div>
 
             <!-- SECTION 6: USERS (Admin Only) -->
+            <!-- Shown when an account has no module assigned yet -->
+            <div id="no-access-notice" class="page-section" style="display:none;">
+                <section class="form-section">
+                    <h3><i class="fas fa-lock"></i> ምንም ክፍል አልተሰጠዎትም</h3>
+                    <p style="margin-top:10px;">ለአካውንትዎ እስካሁን የሚያዩት ክፍል አልተመደበም። እባክዎ አድሚኑን ያነጋግሩ።</p>
+                </section>
+            </div>
+
             <div id="users-sec" class="page-section" style="display:none;">
                 <section class="form-section no-print" style="margin-bottom: 25px;">
                     <h3><i class="fas fa-user-plus"></i> አዲስ ተጠቃሚ/ሰራተኛ መዝግብ</h3>
@@ -1008,7 +1016,7 @@
                         </div>
                         <div class="form-group">
                             <label>የተጠቃሚው ድርሻ (Role)፡</label>
-                            <select id="reg-role" required>
+                            <select id="reg-role" required onchange="document.getElementById('reg-access-group').style.display = (this.value === 'Admin') ? 'none' : '';">
                                 <option value="Employee">Employee (ተራ ሰራተኛ)</option>
                                 <option value="Admin">Admin (አድሚን)</option>
                             </select>
@@ -1021,6 +1029,16 @@
                             <label style="display:flex; align-items:center; gap:8px; font-weight:normal;">
                                 <input type="checkbox" id="reg-perm-approve" style="width:auto; margin:0;"> ማጽደቅ — ወደ እሱ/እሷ የተላከውን ክፍያ/ውል በ«ያጸደቀው» ቦታ መፈረም (ስራ አስኪያጅ/ኃላፊ)
                             </label>
+                        </div>
+                        <div class="form-group" id="reg-access-group">
+                            <label>የሚያያቸው ክፍሎች (ይህ ተጠቃሚ በሲስተሙ ውስጥ የትኞቹን ክፍሎች ማየት እና መጠቀም ይችላል)፡</label>
+                            <div id="reg-access-box"></div>
+                            <div style="margin-top:6px; font-size:12px;">
+                                <a href="javascript:void(0)" onclick="setAccessChecks('reg-access-cb', true)" style="color:#63b3ed;">ሁሉንም ምረጥ</a>
+                                &nbsp;·&nbsp;
+                                <a href="javascript:void(0)" onclick="setAccessChecks('reg-access-cb', false)" style="color:#63b3ed;">ሁሉንም አጽዳ</a>
+                            </div>
+                            <p style="font-size:12px; color:#a0aec0; margin-top:6px;">Admin ሁሉንም ክፍል ያያል። ምልክት ያልተደረገበት ክፍል ለተጠቃሚው በግራ ምናሌ ላይ አይታይም፤ በሰርቨርም ላይ ይከለከላል።</p>
                         </div>
                         <button type="submit" class="btn-submit"><i class="fas fa-save"></i> ተጠቃሚ መዝግብ</button>
                     </form>
@@ -1037,6 +1055,7 @@
                                     <th>Username</th>
                                     <th>Role</th>
                                     <th>ኃላፊነቶች</th>
+                                    <th class="no-print">የሚያያቸው ክፍሎች</th>
                                     <th>ሁኔታ (Status)</th>
                                     <th class="no-print">ተግባር</th>
                                 </tr>
@@ -1045,6 +1064,23 @@
                         </table>
                     </div>
                 </section>
+            </div>
+
+            <!-- Per-user module access editor (Admin) -->
+            <div id="access-modal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:10000; align-items:center; justify-content:center; padding:16px;">
+                <div style="background:rgba(15,23,42,0.97); color:#e2e8f0; border:1px solid rgba(255,255,255,0.15); border-radius:14px; padding:22px; width:min(480px,100%); max-height:90vh; overflow:auto;">
+                    <h3 id="access-modal-title" style="margin-bottom:12px;"></h3>
+                    <div id="access-modal-box"></div>
+                    <div style="margin-top:8px; font-size:12px;">
+                        <a href="javascript:void(0)" onclick="setAccessChecks('modal-access-cb', true)" style="color:#63b3ed;">ሁሉንም ምረጥ</a>
+                        &nbsp;·&nbsp;
+                        <a href="javascript:void(0)" onclick="setAccessChecks('modal-access-cb', false)" style="color:#63b3ed;">ሁሉንም አጽዳ</a>
+                    </div>
+                    <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+                        <button type="button" class="btn-submit" onclick="saveAccessModal()"><i class="fas fa-save"></i> አስቀምጥ</button>
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="closeAccessModal()">ዝጋ</button>
+                    </div>
+                </div>
             </div>
 
         </main>

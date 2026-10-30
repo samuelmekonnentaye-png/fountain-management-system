@@ -140,6 +140,7 @@ async function fetchUsersList() {
     try {
         const res = await authFetch('/api/users');
         const users = await res.json();
+        usersCache = Array.isArray(users) ? users : [];
 
         let pendingCount = users.filter(u => u.status === 'pending').length;
         let pendingBadge = document.getElementById('pending-users-badge');
@@ -189,6 +190,7 @@ async function fetchUsersList() {
                         <td><strong>${u.username}</strong></td>
                         <td>${u.role}</td>
                         <td class="no-print">${permsHtml}</td>
+                        <td class="no-print">${accessCellHtml(u)}</td>
                         <td>${statusBadge}</td>
                         <td class="no-print">${actionButtons}</td>
                     </tr>
@@ -250,6 +252,7 @@ async function registerUser(e) {
     let permissions = [];
     if (document.getElementById('reg-perm-prepare').checked) permissions.push('prepare');
     if (document.getElementById('reg-perm-approve').checked) permissions.push('approve');
+    const access = Array.from(document.querySelectorAll('.reg-access-cb:checked')).map(cb => cb.value);
 
     let submitBtn = document.querySelector('#user-register-form button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
@@ -259,7 +262,7 @@ async function registerUser(e) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                fullName, email, username, password, role, permissions,
+                fullName, email, username, password, role, permissions, access,
                 // The Admin is directly assigning this username/password here, so the
                 // account should be usable right away instead of sitting as "Pending".
                 // (The server only honors this if the request truly carries an Admin token.)
@@ -314,6 +317,10 @@ function toggleMobileSidebar(forceOpen) {
 }
 
 function showSection(sectionId, menuId) {
+    if (!canOpenSection(sectionId)) {
+        alert('ይህን ክፍል ለማየት ፈቃድ የለዎትም');
+        return;
+    }
     document.querySelectorAll('.page-section').forEach(sec => sec.style.display = 'none');
     document.getElementById(sectionId).style.display = 'block';
     document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
@@ -2752,3 +2759,150 @@ async function downloadFleetReportExcel() {
         if (btn) btn.disabled = false;
     }
 }
+
+
+// =====================================================================
+// ===== Per-user module access (which sections each person can see) =====
+// =====================================================================
+// The Admin ticks which modules a user may use; the sidebar then only shows
+// those, and the server refuses requests to the others as well (so hiding a
+// menu item is never the only protection).
+const ACCESS_MODULES = [
+    { key: 'dashboard', label: 'ዳሽቦርድ (Dashboard)', menu: 'menu-dash', section: 'dashboard-sec', group: 'main' },
+    { key: 'payments', label: 'የክፍያዎች መዝገብ', menu: 'menu-pay', section: 'payments-sec', group: 'main' },
+    { key: 'contracts', label: 'የውሎች መዝገብ', menu: 'menu-contract', section: 'contracts-sec', group: 'main' },
+    { key: 'gallery', label: 'የተመዘገቡ ውሎች (ጋላሪ)', menu: 'menu-gallery', section: 'gallery-sec', group: 'main' },
+    { key: 'report', label: 'የፋይናንስ ሪፖርት', menu: 'menu-report', section: 'report-sec', group: 'main' },
+    { key: 'signature', label: 'የፊርማ ምዝገባ', menu: 'menu-signature', section: 'signature-sec', group: 'main' },
+    { key: 'trash', label: 'ትራሽ (Trash)', menu: 'menu-trash', section: 'trash-sec', group: 'main' },
+    { key: 'fleet_vehicles', label: 'ተሽከርካሪዎች', menu: 'menu-fleet-vehicles', section: 'fleet-vehicles-sec', group: 'fleet' },
+    { key: 'fleet_trips', label: 'የአጠቃቀም ምዝገባ', menu: 'menu-fleet-trips', section: 'fleet-trips-sec', group: 'fleet' },
+    { key: 'fleet_maintenance', label: 'ጥገና ምዝገባ', menu: 'menu-fleet-maintenance', section: 'fleet-maintenance-sec', group: 'fleet' },
+    { key: 'fleet_fuel', label: 'ነዳጅ ምዝገባ', menu: 'menu-fleet-fuel', section: 'fleet-fuel-sec', group: 'fleet' },
+    { key: 'fleet_report', label: 'ሳምንታዊ ሪፖርት (ፍሊት)', menu: 'menu-fleet-report', section: 'fleet-report-sec', group: 'fleet' }
+];
+let usersCache = [];
+// null = unrestricted (Admin, or an older session/account without a list).
+let myAccess = (currentUser && Array.isArray(currentUser.access)) ? currentUser.access : null;
+
+function canUseModule(key) {
+    if (!currentUser) return false;
+    if (currentUser.role === 'Admin') return true;
+    if (!Array.isArray(myAccess)) return true;
+    return myAccess.includes(key);
+}
+function canOpenSection(sectionId) {
+    if (sectionId === 'users-sec') return !!currentUser && currentUser.role === 'Admin';
+    const mod = ACCESS_MODULES.find(m => m.section === sectionId);
+    return mod ? canUseModule(mod.key) : true;
+}
+
+function applyMyAccess() {
+    ACCESS_MODULES.forEach(m => {
+        const el = document.getElementById(m.menu);
+        if (el) el.style.display = canUseModule(m.key) ? '' : 'none';
+    });
+    const anyFleet = ACCESS_MODULES.some(m => m.group === 'fleet' && canUseModule(m.key));
+    const fleetLabel = document.getElementById('menu-fleet-label');
+    if (fleetLabel) fleetLabel.style.display = anyFleet ? '' : 'none';
+
+    // If the page opened on a section this person may not use (the dashboard
+    // is the default landing page), move them to the first one they can.
+    const activeMenu = document.querySelector('.sidebar-item.active');
+    const activeMod = activeMenu ? ACCESS_MODULES.find(m => m.menu === activeMenu.id) : null;
+    if (activeMod && !canUseModule(activeMod.key)) {
+        const first = ACCESS_MODULES.find(m => canUseModule(m.key));
+        if (first) {
+            showSection(first.section, first.menu);
+        } else {
+            document.querySelectorAll('.page-section').forEach(sec => sec.style.display = 'none');
+            document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
+            const notice = document.getElementById('no-access-notice');
+            if (notice) notice.style.display = 'block';
+        }
+    }
+}
+
+// Ask the server for the CURRENT list, so a change the Admin just made applies
+// at the next page load instead of waiting for the person to log in again.
+async function refreshMyAccess() {
+    try {
+        const res = await authFetch('/api/users/me/access');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!Array.isArray(data.access)) return;
+        myAccess = data.access;
+        currentUser.access = data.access;
+        sessionStorage.setItem('user', JSON.stringify(currentUser));
+        applyMyAccess();
+    } catch (err) { /* keep whatever the login gave us */ }
+}
+
+function renderAccessCheckboxes(containerId, selectedKeys, cls) {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    const groups = [
+        { id: 'main', title: 'ዋና ክፍሎች' },
+        { id: 'fleet', title: 'ፍሊት ማኔጅመንት' }
+    ];
+    box.innerHTML = groups.map(g => `
+        <div style="margin:8px 0 4px; font-size:12px; color:#a0aec0; font-weight:bold;">${g.title}</div>
+        ${ACCESS_MODULES.filter(m => m.group === g.id).map(m => `
+            <label style="display:flex; align-items:center; gap:8px; font-weight:normal; margin-bottom:5px;">
+                <input type="checkbox" class="${cls}" value="${m.key}" style="width:auto; margin:0;" ${selectedKeys.includes(m.key) ? 'checked' : ''}> ${m.label}
+            </label>`).join('')}
+    `).join('');
+}
+function setAccessChecks(cls, checked) {
+    document.querySelectorAll('.' + cls).forEach(cb => { cb.checked = checked; });
+}
+
+function accessCellHtml(u) {
+    if (u.role === 'Admin') return '<span style="font-size:11px; color:#a0aec0;">ሁሉም (Admin)</span>';
+    let summary;
+    if (!Array.isArray(u.access)) summary = 'ሁሉም (ያልተገደበ)';
+    else if (!u.access.length) summary = '<span style="color:#f6ad55;">ምንም አልተሰጠም</span>';
+    else summary = `${u.access.length} ከ ${ACCESS_MODULES.length} ክፍሎች`;
+    return `<div style="font-size:11px; margin-bottom:4px;">${summary}</div>
+        <button class="btn-submit" style="padding:4px 8px; font-size:11px;" onclick="openAccessModal('${u._id}')"><i class="fas fa-user-lock"></i> አስተካክል</button>`;
+}
+
+let accessModalUserId = null;
+function openAccessModal(userId) {
+    const u = usersCache.find(x => x._id === userId);
+    if (!u) return;
+    accessModalUserId = userId;
+    document.getElementById('access-modal-title').innerText = `የሚያያቸው ክፍሎች — ${u.fullName || u.username}`;
+    // An account with no list yet currently sees everything, so start with all ticked.
+    const selected = Array.isArray(u.access) ? u.access : ACCESS_MODULES.map(m => m.key);
+    renderAccessCheckboxes('access-modal-box', selected, 'modal-access-cb');
+    document.getElementById('access-modal').style.display = 'flex';
+}
+function closeAccessModal() {
+    document.getElementById('access-modal').style.display = 'none';
+    accessModalUserId = null;
+}
+async function saveAccessModal() {
+    if (!accessModalUserId) return;
+    const access = Array.from(document.querySelectorAll('.modal-access-cb:checked')).map(cb => cb.value);
+    try {
+        const res = await authFetch(`/api/users/access/${accessModalUserId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ access })
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ማስቀመጥ አልተቻለም'); return; }
+        closeAccessModal();
+        fetchUsersList();
+        alert('የመዳረሻ ፈቃዱ ተቀምጧል። ተጠቃሚው ገጹን ሲያድስ ይተገበራል።');
+    } catch (err) {
+        alert('ማስቀመጥ አልተቻለም');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    applyMyAccess();
+    refreshMyAccess();
+    if (currentUser && currentUser.role === 'Admin') renderAccessCheckboxes('reg-access-box', [], 'reg-access-cb');
+});
