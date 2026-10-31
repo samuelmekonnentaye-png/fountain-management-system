@@ -12,7 +12,12 @@ const bcrypt = require('bcryptjs');
 const SALT_ROUNDS = 10;
 
 const app = express();
-app.use(express.json());
+// Behind Render's proxy, trust it once so req.ip is the real client address
+// (needed by the login rate limiter below).
+app.set('trust proxy', 1);
+// Restoring a Backup file posts every record at once, which can be well over
+// Express's default 100kb body limit.
+app.use(express.json({ limit: '25mb' }));
 app.use(express.static('public'));
 // New uploads now go straight to Cloudinary (see storage config below) and
 // are referenced by their full https URL, not a local path — this line only
@@ -62,6 +67,13 @@ function verifyToken(token) {
 // Code integrated terminal have both shown this) render a bare
 // console.error(label, errorObject) as just "[object Object]" with no
 // usable detail. Explicit strings can't be mangled that way.
+// Escapes text before it is placed inside an HTML e-mail.
+function escapeHtml(v) {
+    return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+// One bad request must never be able to take the whole server down.
+process.on('unhandledRejection', (err) => { console.error('Unhandled promise rejection:', err && err.message ? err.message : err); });
+
 function logError(label, err) {
     console.error(label);
     console.error('  message:', err && err.message ? err.message : String(err));
@@ -75,11 +87,24 @@ function requireAuth(req, res, next) {
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const payload = verifyToken(token);
-    if (!payload) {
+    if (!payload || !payload.id) {
         return res.status(401).json({ error: 'እባክዎ እንደገና ይግቡ (session ጊዜው አልቆ ወይም ልክ ያልሆነ ነው)።' });
     }
-    req.authUser = payload;
-    next();
+    // The signed token only proves who logged in earlier. The CURRENT account
+    // is re-read here, so a deleted/rejected user is locked out immediately and
+    // a changed role (e.g. Admin -> Employee) takes effect at once instead of
+    // staying valid until the token expires.
+    User.findById(payload.id).then(user => {
+        if (!user || user.status === 'pending' || user.status === 'rejected') {
+            return res.status(401).json({ error: 'አካውንትዎ አልተገኘም ወይም አልጸደቀም፤ እባክዎ እንደገና ይግቡ።' });
+        }
+        req.authUser = { id: user._id.toString(), role: user.role };
+        req.authUserDoc = user;
+        next();
+    }).catch(err => {
+        logError('requireAuth error:', err);
+        res.status(500).json({ error: 'የሰርቨር ስህተት' });
+    });
 }
 function requireAdmin(req, res, next) {
     requireAuth(req, res, () => {
@@ -121,6 +146,7 @@ const userSchema = new mongoose.Schema({
     // account's address. Only its hash is stored (same idea as a password),
     // and it expires after RESET_CODE_TTL_MS so an old email can't be reused.
     resetCodeHash: { type: String, default: null },
+    resetAttempts: { type: Number, default: 0 },
     resetCodeExpires: { type: Date, default: null }
 });
 const User = mongoose.model('User', userSchema);
@@ -137,7 +163,7 @@ function hasPermission(userDoc, perm) {
 function requirePermission(perm) {
     return async (req, res, next) => {
         try {
-            const user = await User.findById(req.authUser.id);
+            const user = req.authUserDoc || await User.findById(req.authUser.id);
             if (!user) return res.status(401).json({ error: 'ተጠቃሚው አልተገኘም' });
             if (!hasPermission(user, perm)) {
                 return res.status(403).json({ error: 'ይህን ለማድረግ ተገቢው ኃላፊነት የለዎትም' });
@@ -154,13 +180,15 @@ function requirePermission(perm) {
 // ===== Per-module access (which sections a user may see / use) =====
 const ACCESS_MODULES = [
     'dashboard', 'payments', 'contracts', 'gallery', 'report', 'signature', 'trash',
-    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report'
+    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report',
+    'fleet_view_all' // lets a fleet officer see fleet entries made by OTHER people
 ];
 
 function effectiveAccess(userDoc) {
     if (!userDoc) return [];
     if (userDoc.role === 'Admin') return ACCESS_MODULES.slice();
-    if (!Array.isArray(userDoc.access)) return ACCESS_MODULES.slice(); // legacy account: unrestricted
+    // Legacy account (no list yet): every section, but NOT other people's fleet entries.
+    if (!Array.isArray(userDoc.access)) return ACCESS_MODULES.filter(k => k !== 'fleet_view_all');
     return userDoc.access.filter(k => ACCESS_MODULES.includes(k));
 }
 // Route guard: the caller needs at least ONE of the listed modules.
@@ -387,7 +415,8 @@ async function checkAndSendEmailReminders() {
         const today = new Date();
         today.setHours(0,0,0,0);
 
-        const records = await Record.find();
+        // Records in the Trash must not keep sending reminders.
+        const records = await Record.find({ isDeleted: { $ne: true } });
 
         for (let record of records) {
             const dueDate = new Date(record.dueDate);
@@ -418,11 +447,11 @@ async function checkAndSendEmailReminders() {
                             <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
                                 <h2 style="color: #2b6cb0;">Fountain International Trading PLC</h2>
                                 <h3 style="color: ${isOverdue ? '#e53e3e' : '#d69e2e'};">${isOverdue ? '🔴 ጊዜው ያለፈ የክፍያ/ውል ማሳሰቢያ' : '⚠️ የክፍያ/የውል ማሳሰቢያ'}</h3>
-                                <p>ሰላም <strong>${user.fullName || user.username}</strong>፣</p>
-                                <p>የተመዘገበው <strong>[${record.category}] ${record.name}</strong> ${isOverdue ? `የማብቂያ ቀኑ ካለፈ <strong>${Math.abs(diffDays)} ቀናት</strong> ሆኖታል፣ እባክዎ በአስቸኳይ ያድሱት።` : `የሚያበቃበት ቀን በ<strong>${diffDays} ቀናት</strong> ውስጥ ስለሆነ አስፈላጊውን ክትትል እንዲያደርጉ እናስታውሳለን።`}</p>
+                                <p>ሰላም <strong>${escapeHtml(user.fullName || user.username)}</strong>፣</p>
+                                <p>የተመዘገበው <strong>[${escapeHtml(record.category)}] ${escapeHtml(record.name)}</strong> ${isOverdue ? `የማብቂያ ቀኑ ካለፈ <strong>${Math.abs(diffDays)} ቀናት</strong> ሆኖታል፣ እባክዎ በአስቸኳይ ያድሱት።` : `የሚያበቃበት ቀን በ<strong>${diffDays} ቀናት</strong> ውስጥ ስለሆነ አስፈላጊውን ክትትል እንዲያደርጉ እናስታውሳለን።`}</p>
                                 <hr />
                                 <ul>
-                                    <li><strong>ስም/መግለጫ፦</strong> ${record.name}</li>
+                                    <li><strong>ስም/መግለጫ፦</strong> ${escapeHtml(record.name)}</li>
                                     <li><strong>መጠን፦</strong> ${record.amount} ብር</li>
                                     <li><strong>የማብቂያ ቀን (Due Date)፦</strong> ${record.dueDate}</li>
                                     <li><strong>ሁኔታ፦</strong> <span style="color: ${isOverdue ? 'red' : '#d97706'}; font-weight: bold;">${daysLabel}</span></li>
@@ -448,12 +477,37 @@ cron.schedule('0 8 * * *', () => {
     checkAndSendEmailReminders();
 });
 
+// ===== Login brute-force limiter (in memory; resets on restart) =====
+const loginFailures = new Map();
+const LOGIN_MAX_FAILS = 8;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+function loginKey(req, username) { return `${req.ip}|${String(username).toLowerCase()}`; }
+function loginLocked(key) {
+    const e = loginFailures.get(key);
+    if (!e) return false;
+    if (Date.now() - e.first > LOGIN_WINDOW_MS) { loginFailures.delete(key); return false; }
+    return e.count >= LOGIN_MAX_FAILS;
+}
+function loginFailed(key) {
+    const e = loginFailures.get(key);
+    if (!e || Date.now() - e.first > LOGIN_WINDOW_MS) loginFailures.set(key, { count: 1, first: Date.now() });
+    else e.count += 1;
+}
+
 // API 1: Login with Status Check (የተስተካከለ የሎጊን ክፍል)
 app.post('/api/users/login', async (req, res) => {
     const { username, password } = req.body;
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+        return res.status(400).json({ error: 'የተጠቃሚ ስም እና የይለፍ ቃል ያስገቡ' });
+    }
+    const lkey = loginKey(req, username);
+    if (loginLocked(lkey)) {
+        return res.status(429).json({ error: 'ብዙ ጊዜ ተሳስተዋል። ከ15 ደቂቃ በኋላ እንደገና ይሞክሩ።' });
+    }
     try {
         const user = await User.findOne({ username });
         if (!user) {
+            loginFailed(lkey);
             return res.status(401).json({ error: 'የተሳሳተ የባለቤት ስም ወይም የይለፍ ቃል!' });
         }
 
@@ -474,6 +528,7 @@ app.post('/api/users/login', async (req, res) => {
         }
 
         if (!passwordMatches) {
+            loginFailed(lkey);
             return res.status(401).json({ error: 'የተሳሳተ የባለቤት ስም ወይም የይለፍ ቃል!' });
         }
         if (user.status === 'pending') {
@@ -482,6 +537,7 @@ app.post('/api/users/login', async (req, res) => {
         if (user.status === 'rejected') {
             return res.status(403).json({ error: 'ይህ አካውንት ተቀባይነት አላገኘም (Rejected)።' });
         }
+        loginFailures.delete(lkey);
         const token = signToken({ id: user._id.toString(), role: user.role, exp: Date.now() + TOKEN_TTL_MS });
         res.json({ id: user._id, fullName: user.fullName, username: user.username, email: user.email, role: user.role, access: effectiveAccess(user), token });
     } catch (err) {
@@ -493,13 +549,33 @@ app.post('/api/users/login', async (req, res) => {
     }
 });
 
+// Checks an emailed reset code. Only a few wrong guesses are allowed per code —
+// otherwise the 6-digit code could simply be brute-forced.
+const MAX_RESET_ATTEMPTS = 5;
+async function checkResetCode(user, code) {
+    if (!user || !user.resetCodeHash || !user.resetCodeExpires) return 'ልክ ያልሆነ ወይም ጊዜው ያለፈበት ኮድ';
+    if (user.resetCodeExpires.getTime() < Date.now()) return 'የኮዱ ጊዜ አልቋል፣ አዲስ ኮድ ይጠይቁ';
+    const matches = await bcrypt.compare(code, user.resetCodeHash);
+    if (matches) return null;
+    user.resetAttempts = (user.resetAttempts || 0) + 1;
+    if (user.resetAttempts >= MAX_RESET_ATTEMPTS) {
+        user.resetCodeHash = null;
+        user.resetCodeExpires = null;
+        user.resetAttempts = 0;
+        await user.save();
+        return 'ብዙ ጊዜ ተሳስተዋል፤ እባክዎ አዲስ ኮድ ይጠይቁ';
+    }
+    await user.save();
+    return 'ልክ ያልሆነ ኮድ';
+}
+
 // API 1.1: Forgot password — request a reset code by username or email.
 // Always responds with the same generic message whether or not an account
 // was found, so this endpoint can't be used to check which usernames/emails
 // exist. If an account IS found, a 6-digit code is emailed to the address
 // already on file (never to an address supplied in the request).
 app.post('/api/users/forgot-password', async (req, res) => {
-    const identifier = (req.body.identifier || '').trim();
+    const identifier = String(req.body.identifier || '').trim();
     const genericResponse = { message: 'መለያ ካለ ወደ ኢሜይልዎ የማረጋገጫ ኮድ ተልኳል። እባክዎ ኢሜይልዎን ያረጋግጡ።' };
     try {
         if (!identifier) return res.json(genericResponse);
@@ -507,8 +583,9 @@ app.post('/api/users/forgot-password', async (req, res) => {
         const user = await User.findOne({ $or: [{ username: identifier }, { email: identifier }] });
         if (!user || !user.email) return res.json(genericResponse);
 
-        const code = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+        const code = String(crypto.randomInt(100000, 1000000)); // 6-digit, cryptographically random
         user.resetCodeHash = await bcrypt.hash(code, SALT_ROUNDS);
+        user.resetAttempts = 0;
         user.resetCodeExpires = new Date(Date.now() + RESET_CODE_TTL_MS);
         await user.save();
 
@@ -518,7 +595,7 @@ app.post('/api/users/forgot-password', async (req, res) => {
                 to: user.email,
                 subject: '🔑 የይለፍ ቃል መቀየሪያ ኮድ (Password Reset Code)',
                 html: `
-                    <p>ሰላም ${user.fullName || user.username},</p>
+                    <p>ሰላም ${escapeHtml(user.fullName || user.username)},</p>
                     <p>የይለፍ ቃልዎን ለመቀየር የሚከተለውን ኮድ ይጠቀሙ፦</p>
                     <h2 style="letter-spacing:4px;">${code}</h2>
                     <p>ይህ ኮድ ለ15 ደቂቃ ብቻ የሚሰራ ነው። ይህን ካልጠየቁ፣ እባክዎ ይህን መልእክት ችላ ይበሉ።</p>
@@ -545,23 +622,15 @@ app.post('/api/users/forgot-password', async (req, res) => {
 // code — that still happens in reset-password below — so the same code can
 // still be submitted there right after being verified here.
 app.post('/api/users/verify-reset-code', async (req, res) => {
-    const identifier = (req.body.identifier || '').trim();
-    const code = (req.body.code || '').trim();
+    const identifier = String(req.body.identifier || '').trim();
+    const code = String(req.body.code || '').trim();
     try {
         if (!identifier || !code) {
             return res.status(400).json({ error: 'እባክዎ ኮዱን ያስገቡ' });
         }
         const user = await User.findOne({ $or: [{ username: identifier }, { email: identifier }] });
-        if (!user || !user.resetCodeHash || !user.resetCodeExpires) {
-            return res.status(400).json({ error: 'ልክ ያልሆነ ወይም ጊዜው ያለፈበት ኮድ' });
-        }
-        if (user.resetCodeExpires.getTime() < Date.now()) {
-            return res.status(400).json({ error: 'የኮዱ ጊዜ አልቋል፣ አዲስ ኮድ ይጠይቁ' });
-        }
-        const matches = await bcrypt.compare(code, user.resetCodeHash);
-        if (!matches) {
-            return res.status(400).json({ error: 'ልክ ያልሆነ ኮድ' });
-        }
+        const codeError = await checkResetCode(user, code);
+        if (codeError) return res.status(400).json({ error: codeError });
         res.json({ ok: true, valid: true });
     } catch (err) {
         logError('Verify reset code error:', err);
@@ -573,6 +642,9 @@ app.post('/api/users/verify-reset-code', async (req, res) => {
 app.post('/api/users/reset-password', async (req, res) => {
     const { identifier, code, newPassword } = req.body;
     try {
+        if ([identifier, code, newPassword].some(v => typeof v !== 'string')) {
+            return res.status(400).json({ error: 'እባክዎ ሁሉንም መስኮች ይሙሉ' });
+        }
         if (!identifier || !code || !newPassword) {
             return res.status(400).json({ error: 'እባክዎ ሁሉንም መስኮች ይሙሉ' });
         }
@@ -581,20 +653,13 @@ app.post('/api/users/reset-password', async (req, res) => {
         }
 
         const user = await User.findOne({ $or: [{ username: identifier }, { email: identifier }] });
-        if (!user || !user.resetCodeHash || !user.resetCodeExpires) {
-            return res.status(400).json({ error: 'ልክ ያልሆነ ወይም ጊዜው ያለፈበት ኮድ' });
-        }
-        if (user.resetCodeExpires.getTime() < Date.now()) {
-            return res.status(400).json({ error: 'የኮዱ ጊዜ አልቋል፣ አዲስ ኮድ ይጠይቁ' });
-        }
-        const matches = await bcrypt.compare(code, user.resetCodeHash);
-        if (!matches) {
-            return res.status(400).json({ error: 'ልክ ያልሆነ ኮድ' });
-        }
+        const codeError = await checkResetCode(user, code);
+        if (codeError) return res.status(400).json({ error: codeError });
 
         user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
         user.resetCodeHash = null;
         user.resetCodeExpires = null;
+        user.resetAttempts = 0;
         await user.save();
 
         res.json({ message: 'የይለፍ ቃልዎ ተቀይሯል! አሁን በአዲሱ የይለፍ ቃል ይግቡ።' });
@@ -610,6 +675,9 @@ app.post('/api/users/reset-password', async (req, res) => {
 // honored if the request actually carries a valid Admin token.
 app.post('/api/users/register', async (req, res) => {
     const { fullName, username, password, email, role, status, permissions, access } = req.body;
+    if ([fullName, username, password, email].some(v => typeof v !== 'string' || !v.trim())) {
+        return res.status(400).json({ error: 'እባክዎ ሁሉንም መስኮች በትክክል ይሙሉ (ስም፣ ኢሜይል፣ Username፣ Password)።' });
+    }
     try {
         const existing = await User.findOne({ username });
         if (existing) return res.status(400).json({ error: 'ይህ የተጠቃሚ ስም አስቀድሞ ተይዟል!' });
@@ -619,7 +687,8 @@ app.post('/api/users/register', async (req, res) => {
         const authHeader = req.headers['authorization'] || '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
         const payload = verifyToken(token);
-        const requesterIsAdmin = !!(payload && payload.role === 'Admin');
+        const requesterDoc = (payload && payload.id) ? await User.findById(payload.id) : null;
+        const requesterIsAdmin = !!(requesterDoc && requesterDoc.role === 'Admin' && requesterDoc.status !== 'rejected' && requesterDoc.status !== 'pending');
 
         // Only an Admin sets responsibilities directly at registration time —
         // a public self-signup always starts as a plain 'prepare' account
@@ -673,7 +742,7 @@ app.post('/api/users/register', async (req, res) => {
 // API 3: Get All Users
 app.get('/api/users', requireAdmin, async (req, res) => {
     try {
-        const users = await User.find({}, '-password');
+        const users = await User.find({}, '-password -resetCodeHash -resetCodeExpires -resetAttempts');
         res.json(users);
     } catch (err) {
         logError('Get users error:', err);
@@ -683,9 +752,16 @@ app.get('/api/users', requireAdmin, async (req, res) => {
 
 // API 3.1: Update User Status (Approve or Reject by Admin)
 app.put('/api/users/status/:id', requireAdmin, async (req, res) => {
-    const { status } = req.body; 
+    const { status } = req.body;
+    if (!['approved', 'rejected', 'pending'].includes(status)) {
+        return res.status(400).json({ error: 'ልክ ያልሆነ ሁኔታ' });
+    }
+    if (req.params.id === req.authUser.id && status !== 'approved') {
+        return res.status(400).json({ error: 'የራስዎን አካውንት ማገድ አይችሉም' });
+    }
     try {
-        const user = await User.findByIdAndUpdate(req.params.id, { status }, { new: true });
+        const user = await User.findByIdAndUpdate(req.params.id, { status }, { new: true, projection: '-password -resetCodeHash -resetCodeExpires -resetAttempts' });
+        if (!user) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም!' });
         res.json({ message: `የተጠቃሚው ሁኔታ ወደ ${status} ተቀይሯል!`, user });
     } catch (err) {
         logError('Update user status error:', err);
@@ -701,7 +777,7 @@ app.put('/api/users/permissions/:id', requireAdmin, async (req, res) => {
         const permissions = Array.isArray(req.body.permissions)
             ? req.body.permissions.filter(p => VALID_PERMISSIONS.includes(p))
             : [];
-        const user = await User.findByIdAndUpdate(req.params.id, { permissions }, { new: true, fields: '-password' });
+        const user = await User.findByIdAndUpdate(req.params.id, { permissions }, { new: true, projection: '-password -resetCodeHash -resetCodeExpires -resetAttempts' });
         if (!user) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም!' });
         res.json(user);
     } catch (err) {
@@ -729,7 +805,7 @@ app.put('/api/users/access/:id', requireAdmin, async (req, res) => {
     try {
         if (!Array.isArray(req.body.access)) return res.status(400).json({ error: 'ልክ ያልሆነ ጥያቄ' });
         const access = Array.from(new Set(req.body.access.filter(k => ACCESS_MODULES.includes(k))));
-        const user = await User.findByIdAndUpdate(req.params.id, { access }, { new: true, fields: '-password' });
+        const user = await User.findByIdAndUpdate(req.params.id, { access }, { new: true, projection: '-password -resetCodeHash -resetCodeExpires -resetAttempts' });
         if (!user) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም' });
         res.json(user);
     } catch (err) {
@@ -740,6 +816,14 @@ app.put('/api/users/access/:id', requireAdmin, async (req, res) => {
 
 app.delete('/api/users/:id', requireAdmin, async (req, res) => {
     try {
+        if (req.params.id === req.authUser.id) {
+            return res.status(400).json({ error: 'የራስዎን አካውንት መሰረዝ አይችሉም' });
+        }
+        const target = await User.findById(req.params.id);
+        if (!target) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም!' });
+        if (target.role === 'Admin' && (await User.countDocuments({ role: 'Admin' })) <= 1) {
+            return res.status(400).json({ error: 'የመጨረሻውን Admin መሰረዝ አይቻልም' });
+        }
         const deleted = await User.findByIdAndDelete(req.params.id);
         if (!deleted) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም!' });
         res.json({ message: 'ተጠቃሚው ተሰርዟል!' });
@@ -937,6 +1021,14 @@ app.get('/api/records/financial-events/:userId', requireAuth, async (req, res) =
     }
 });
 
+// The only fields a payment/contract form may set.
+const RECORD_FORM_FIELDS = ['name', 'itemType', 'description', 'amount', 'paymentDate', 'startDate', 'dueDate', 'category'];
+function pickRecordFields(body) {
+    const out = {};
+    RECORD_FORM_FIELDS.forEach(k => { if (body && body[k] !== undefined) out[k] = body[k]; });
+    return out;
+}
+
 // Shared validation for creating/updating a payment or contract record.
 function validateRecordInput(body) {
     const amount = Number(body.amount);
@@ -955,7 +1047,11 @@ app.post('/api/records', requireAuth, requirePermission('prepare'), upload.singl
         const validationError = validateRecordInput(req.body);
         if (validationError) return res.status(400).json({ error: validationError });
 
-        const recordData = req.body;
+        // Only the form's own fields are accepted, and the owner is ALWAYS the
+        // logged-in user — a request can't claim another person's userId or
+        // plant its own signatures/approval/deleted flags.
+        const recordData = pickRecordFields(req.body);
+        recordData.userId = req.authUser.id;
         if (req.file) {
             const uploaded = await uploadBufferToCloudinary(req.file.buffer, 'fountain-records', 'auto');
             recordData.file = uploaded.secure_url;
@@ -979,11 +1075,16 @@ app.put('/api/records/:id', requireAuth, requirePermission('prepare'), upload.si
         // renewing a contract/payment no longer permanently erases its
         // previous due date, amount, or history.
         const existing = await Record.findById(req.params.id);
-        if (existing) {
-            await RecordHistory.create({ recordId: req.params.id, snapshot: existing.toObject() });
+        if (!existing) return res.status(404).json({ error: 'መዝገቡ አልተገኘም' });
+        // Only the person who registered it (or an Admin) may change/renew it.
+        if (req.authUser.role !== 'Admin' && existing.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው መዝገብ ማስተካከል አይችሉም' });
         }
+        await RecordHistory.create({ recordId: req.params.id, snapshot: existing.toObject() });
 
-        const recordData = req.body;
+        // The owner never changes on an update (previously whoever edited it
+        // became its owner, which moved records between people).
+        const recordData = pickRecordFields(req.body);
         if (req.file) {
             const uploaded = await uploadBufferToCloudinary(req.file.buffer, 'fountain-records', 'auto');
             recordData.file = uploaded.secure_url;
@@ -999,6 +1100,14 @@ app.put('/api/records/:id', requireAuth, requirePermission('prepare'), upload.si
 // API 7.1: View a record's renewal history
 app.get('/api/records/:id/history', requireAuth, requireModule('payments', 'contracts', 'gallery', 'dashboard', 'report'), async (req, res) => {
     try {
+        if (req.authUser.role !== 'Admin') {
+            const rec = await Record.findById(req.params.id);
+            const me = req.authUser.id;
+            const allowed = rec && (rec.userId === me
+                || (rec.approval && rec.approval.pendingApproverId === me)
+                || (rec.approvedBy && rec.approvedBy.userId === me));
+            if (!allowed) return res.status(403).json({ error: 'የሌላ ሰው መዝገብ ታሪክ ማየት አይችሉም' });
+        }
         const history = await RecordHistory.find({ recordId: req.params.id }).sort({ archivedAt: -1 });
         res.json(history);
     } catch (err) {
@@ -1401,6 +1510,26 @@ const fuelLogSchema = new mongoose.Schema({
 });
 const FuelLog = mongoose.model('FuelLog', fuelLogSchema);
 
+// ----- Who may see which fleet ENTRIES -----
+// Vehicles are shared company data (everyone with a fleet section needs them
+// for the drop-downs), but trip / maintenance / fuel ENTRIES belong to the
+// person who made them: others never see them — except Admin and anyone an
+// Admin gave the 'fleet_view_all' access (e.g. the fleet officer who prepares
+// the weekly report).
+function canViewAllFleet(req) {
+    return req.authUser.role === 'Admin'
+        || (!!req.authUserDoc && effectiveAccess(req.authUserDoc).includes('fleet_view_all'));
+}
+function fleetScope(req) {
+    return canViewAllFleet(req) ? {} : { userId: req.authUser.id };
+}
+function maintenanceScope(req) {
+    if (canViewAllFleet(req)) return {};
+    const me = req.authUser.id;
+    // plus anything sent to this person for approval, or that they approved
+    return { $or: [{ userId: me }, { 'approval.pendingApproverId': me }, { 'approvedBy.userId': me }] };
+}
+
 // ---------- helpers ----------
 function toNum(v, fallback) {
     if (v === undefined || v === null || v === '') return fallback;
@@ -1581,10 +1710,10 @@ app.get('/api/fleet/trips', requireAuth, requireModule('fleet_trips', 'fleet_rep
             const range = {};
             if (from) range.$gte = from;
             if (to) range.$lte = to;
-            const ranged = await Trip.find({ tripDate: range }).sort({ tripDate: 1, createdAt: 1 }).limit(5000);
+            const ranged = await Trip.find({ ...fleetScope(req), tripDate: range }).sort({ tripDate: 1, createdAt: 1 }).limit(5000);
             return res.json(ranged);
         }
-        const list = await Trip.find().sort({ tripDate: -1, createdAt: -1 }).limit(500);
+        const list = await Trip.find(fleetScope(req)).sort({ tripDate: -1, createdAt: -1 }).limit(500);
         res.json(list);
     } catch (err) {
         logError('Fleet get trips error:', err);
@@ -1635,7 +1764,12 @@ app.post('/api/fleet/trips', requireAuth, requireModule('fleet_trips'), requireP
 });
 app.delete('/api/fleet/trips/:id', requireAuth, requireModule('fleet_trips'), requirePermission('prepare'), async (req, res) => {
     try {
-        await Trip.findByIdAndDelete(req.params.id);
+        const trip = await Trip.findById(req.params.id);
+        if (!trip) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (req.authUser.role !== 'Admin' && trip.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ መሰረዝ አይችሉም' });
+        }
+        await trip.deleteOne();
         res.json({ message: 'ተሰርዟል' });
     } catch (err) {
         logError('Fleet delete trip error:', err);
@@ -1646,7 +1780,7 @@ app.delete('/api/fleet/trips/:id', requireAuth, requireModule('fleet_trips'), re
 // ---------- Maintenance (with prepare → send → approve workflow) ----------
 app.get('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance'), async (req, res) => {
     try {
-        const list = await Maintenance.find().sort({ date: -1, createdAt: -1 }).limit(500);
+        const list = await Maintenance.find(maintenanceScope(req)).sort({ date: -1, createdAt: -1 }).limit(500);
         res.json(list);
     } catch (err) {
         logError('Fleet get maintenance error:', err);
@@ -1696,6 +1830,9 @@ app.delete('/api/fleet/maintenance/:id', requireAuth, requireModule('fleet_maint
     try {
         const item = await Maintenance.findById(req.params.id);
         if (!item) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (req.authUser.role !== 'Admin' && item.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ መሰረዝ አይችሉም' });
+        }
         if (item.preparedBy && item.preparedBy.userId) {
             return res.status(400).json({ error: 'የተፈረመበትን ምዝገባ መሰረዝ አይቻልም' });
         }
@@ -1729,6 +1866,9 @@ app.post('/api/fleet/maintenance/:id/sign', requireAuth, requireModule('fleet_ma
 
         const item = await Maintenance.findById(req.params.id);
         if (!item) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (slot === 'prepared' && requesterUser.role !== 'Admin' && item.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'በሌላ ሰው የተመዘገበ ምዝገባ ላይ እንደ «ያዘጋጀው» መፈረም አይችሉም' });
+        }
 
         const signaturePayload = {
             userId: sig.userId, fullName: sig.fullName, responsibility: sig.responsibility,
@@ -1788,7 +1928,7 @@ app.post('/api/fleet/maintenance/:id/sign', requireAuth, requireModule('fleet_ma
 // ---------- Fuel log (actual receipts) ----------
 app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel'), async (req, res) => {
     try {
-        const list = await FuelLog.find().sort({ date: -1, createdAt: -1 }).limit(500);
+        const list = await FuelLog.find(fleetScope(req)).sort({ date: -1, createdAt: -1 }).limit(500);
         res.json(list);
     } catch (err) {
         logError('Fleet get fuel logs error:', err);
@@ -1834,7 +1974,12 @@ app.post('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel'), requi
 });
 app.delete('/api/fleet/fuel-logs/:id', requireAuth, requireModule('fleet_fuel'), requirePermission('prepare'), async (req, res) => {
     try {
-        await FuelLog.findByIdAndDelete(req.params.id);
+        const log = await FuelLog.findById(req.params.id);
+        if (!log) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (req.authUser.role !== 'Admin' && log.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ መሰረዝ አይችሉም' });
+        }
+        await log.deleteOne();
         res.json({ message: 'ተሰርዟል' });
     } catch (err) {
         logError('Fleet delete fuel log error:', err);
