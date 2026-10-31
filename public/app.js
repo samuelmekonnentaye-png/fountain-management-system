@@ -185,9 +185,9 @@ async function fetchUsersList() {
                 usersTable.innerHTML += `
                     <tr>
                         <td style="font-size:11px;">${u._id}</td>
-                        <td>${u.fullName || '-'}</td>
-                        <td>${u.email || '-'}</td>
-                        <td><strong>${u.username}</strong></td>
+                        <td>${fleetEsc(u.fullName || '-')}</td>
+                        <td>${fleetEsc(u.email || '-')}</td>
+                        <td><strong>${fleetEsc(u.username)}</strong></td>
                         <td>${u.role}</td>
                         <td class="no-print">${permsHtml}</td>
                         <td class="no-print">${accessCellHtml(u)}</td>
@@ -420,6 +420,10 @@ async function handleFormSubmit(e, category) {
             document.getElementById(category === 'ክፍያ' ? 'payment-form' : 'contract-form').reset();
             resetRecordFormMode(prefix);
             alert(editId ? "ውሉ/ክፍያው በአዲስ ቀን ታድሷል!" : "መረጃው በትክክል ተመዝግቧል!");
+        } else {
+            let errData = {};
+            try { errData = await res.json(); } catch (parseErr) {}
+            alert(errData.error || "መመዝገብ አልተቻለም!");
         }
     } catch (err) {
         alert("ስህተት አጋጥሟል!");
@@ -497,7 +501,7 @@ function renewRecord(id) {
     if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-redo"></i> ውሉን/ክፍያውን አድስ (አዲስ ቀን አስቀምጥ)';
 
     let formTitle = document.getElementById(prefix + '-form-title');
-    if (formTitle) formTitle.innerHTML = `<i class="fas fa-redo"></i> ማደሻ፦ ${record.name}`;
+    if (formTitle) formTitle.innerHTML = `<i class="fas fa-redo"></i> ማደሻ፦ ${fleetEsc(record.name)}`;
 
     let form = document.getElementById(isPayment ? 'payment-form' : 'contract-form');
     if (form) form.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -527,7 +531,7 @@ async function fetchTrash() {
         let isAdmin = currentUser && currentUser.role === 'Admin';
         list.innerHTML = items.map(item => `
             <tr>
-                <td><strong>[${item.category}]</strong> ${item.name}</td>
+                <td><strong>[${fleetEsc(item.category)}]</strong> ${fleetEsc(item.name)}</td>
                 <td>${Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} ብር</td>
                 <td>${item.dueDate}</td>
                 <td>${item.deletedAt ? new Date(item.deletedAt).toLocaleString() : ''}</td>
@@ -696,7 +700,7 @@ function renderAllData() {
 
         let makeRow = (incCat) => `
             <tr>
-                ${incCat ? `<td><strong>[${item.category}]</strong> ${item.name}</td>` : `<td>${item.name}</td>`}
+                ${incCat ? `<td><strong>[${fleetEsc(item.category)}]</strong> ${fleetEsc(item.name)}</td>` : `<td>${fleetEsc(item.name)}</td>`}
                 <td>${formattedAmount} ብር</td>
                 <td>${item.paymentDate}</td>
                 <td>${item.startDate} እስከ ${item.dueDate}</td>
@@ -723,7 +727,7 @@ function renderAllData() {
                             <input type="checkbox" class="report-row-check" data-id="${item._id}" ${isChecked} onchange="toggleReportRowSelect('${item._id}', this.checked)">
                             ${reportIndex++}
                         </td>
-                        <td>${item.name}</td>
+                        <td>${fleetEsc(item.name)}</td>
                         <td>${item.paymentDate}</td>
                         <td>${formattedAmount} ብር</td>
                         <td class="no-print">
@@ -739,7 +743,7 @@ function renderAllData() {
         if (item.category === 'ውል') {
             conRows.push(makeRow(false));
             if (gallery && item.file) {
-                gallery.innerHTML += `<div style="border:1px solid rgba(255,255,255,0.1); padding:10px; border-radius:8px; width:180px; text-align:center; background:rgba(255,255,255,0.05);"><img src="${item.file}" style="width:100%; height:140px; object-fit:cover; cursor:pointer;" onclick="previewImage('${item.file}')"><p style="font-size:12px; margin-top:5px; color:#fff;">${item.name}</p></div>`;
+                gallery.innerHTML += `<div style="border:1px solid rgba(255,255,255,0.1); padding:10px; border-radius:8px; width:180px; text-align:center; background:rgba(255,255,255,0.05);"><img src="${item.file}" style="width:100%; height:140px; object-fit:cover; cursor:pointer;" onclick="previewImage('${item.file}')"><p style="font-size:12px; margin-top:5px; color:#fff;">${fleetEsc(item.name)}</p></div>`;
             }
         }
     });
@@ -1055,8 +1059,8 @@ function signatureSignedBlockHtml(signed) {
     return `
         <img src="${signed.signatureImage}" alt="ፊርማ" class="signature-slot-img">
         <div class="signature-slot-meta">
-            <strong>${signed.fullName}</strong><br>
-            <span>${signed.responsibility}</span><br>
+            <strong>${fleetEsc(signed.fullName)}</strong><br>
+            <span>${fleetEsc(signed.responsibility)}</span><br>
             <span style="font-size:10px; color:#a0aec0;">${signedDate}</span>
         </div>
     `;
@@ -1109,7 +1113,7 @@ async function promptAndSign(recordId, slot, kind = 'record') {
             let res = await authFetch('/api/approvers');
             let approvers = await res.json();
             approverSelect.innerHTML = approvers.length
-                ? approvers.map(a => `<option value="${a.id}">${a.fullName} (${a.responsibility})</option>`).join('')
+                ? approvers.map(a => `<option value="${a.id}">${fleetEsc(a.fullName)} (${fleetEsc(a.responsibility)})</option>`).join('')
                 : '<option value="">ምንም ማጽደቅ የሚችል ተጠቃሚ አልተመዘገበም — መጀመሪያ አድሚን ያዋቅር</option>';
         } catch (err) {
             approverSelect.innerHTML = '<option value="">ዝርዝሩን ማምጣት አልተቻለም</option>';
@@ -1481,7 +1485,7 @@ function checkAndTriggerNotifications() {
                     <div class="notif-item" onclick="handleApprovalNotificationClick('${n._id}', '${n.recordId}', '${n.module || 'record'}')" style="cursor: pointer; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); position: relative;">
                         <span onclick="markApprovalNotificationRead('${n._id}', event)" title="እንደተነበበ ምልክት አድርግ" style="position: absolute; top: 6px; right: 6px; cursor: pointer; color: #a0aec0; font-weight: bold; padding: 2px 6px;">&times;</span>
                         <div style="padding-right: 20px;">
-                            ${icon} <span style="font-size: 12px;">${n.message}</span>
+                            ${icon} <span style="font-size: 12px;">${fleetEsc(n.message)}</span>
                         </div>
                     </div>
                 `;
@@ -1499,7 +1503,7 @@ function checkAndTriggerNotifications() {
                     <div class="notif-item" onclick="handleNotificationClick('${rec.id}')" style="cursor: pointer; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); position: relative;">
                         <span onclick="dismissNotif('${rec.id}', event)" title="አሰናብት" style="position: absolute; top: 6px; right: 6px; cursor: pointer; color: #a0aec0; font-weight: bold; padding: 2px 6px;">&times;</span>
                         <div style="padding-right: 20px;">
-                            ⚠️ <strong>${rec.name}</strong><br>
+                            ⚠️ <strong>${fleetEsc(rec.name)}</strong><br>
                             ${statusLine}
                         </div>
                     </div>
@@ -1589,7 +1593,7 @@ function showToast(message) {
     if (!container) return;
     let toast = document.createElement('div');
     toast.className = 'toast-notification';
-    toast.innerHTML = message;
+    toast.textContent = message;
     container.appendChild(toast);
 
     setTimeout(() => {
@@ -1785,7 +1789,7 @@ function exportToPDF(cat) {
     let bodyRows = rows.map(r => `
         <tr>
             <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.no}</td>
-            <td style="border:1px solid #cbd5e0; padding:7px;">${r.name}</td>
+            <td style="border:1px solid #cbd5e0; padding:7px;">${fleetEsc(r.name)}</td>
             <td style="border:1px solid #cbd5e0; padding:7px; text-align:right;">${r.amount.toLocaleString('en-US')}</td>
             <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.paymentDate}</td>
             <td style="border:1px solid #cbd5e0; padding:7px; text-align:center;">${r.startDate}</td>
@@ -1911,9 +1915,9 @@ function renderVehicleList() {
         const docStatus = getVehicleDocStatus(v);
         return `
             <tr>
-                <td>${v.plateNumber}</td>
-                <td>${v.vehicleType}${v.model ? ' / ' + v.model : ''}</td>
-                <td>${v.driverName || '-'}</td>
+                <td>${fleetEsc(v.plateNumber)}</td>
+                <td>${fleetEsc(v.vehicleType)}${v.model ? ' / ' + fleetEsc(v.model) : ''}</td>
+                <td>${fleetEsc(v.driverName || '-')}</td>
                 <td>${(v.currentKm || 0).toLocaleString('en-US')}</td>
                 <td>${statusLabels[v.status] || v.status}</td>
                 <td>${docStatus.text || '🟢 ችግር የለም'}</td>
@@ -2016,7 +2020,7 @@ async function toggleVehicleTrash() {
         const list = await res.json();
         if (!list.length) { box.innerHTML = '<p style="color:#a0aec0;">ትራሹ ባዶ ነው</p>'; return; }
         box.innerHTML = `<table class="data-table"><thead><tr><th>ሰሌዳ ቁጥር</th><th>አይነት</th><th>የተሰረዘበት ጊዜ</th><th>እርምጃ</th></tr></thead><tbody>
-            ${list.map(v => `<tr><td>${v.plateNumber}</td><td>${v.vehicleType}</td><td>${v.deletedAt ? new Date(v.deletedAt).toLocaleDateString('en-GB') : '-'}</td>
+            ${list.map(v => `<tr><td>${fleetEsc(v.plateNumber)}</td><td>${fleetEsc(v.vehicleType)}</td><td>${v.deletedAt ? new Date(v.deletedAt).toLocaleDateString('en-GB') : '-'}</td>
                 <td><button onclick="restoreVehicle('${v._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px;"><i class="fas fa-undo"></i> መልስ</button></td></tr>`).join('')}
             </tbody></table>`;
     } catch (err) {
@@ -2084,7 +2088,7 @@ function populateTripVehicleSelect() {
     if (!select) return;
     const activeVehicles = fleetVehicles.filter(v => v.status !== 'out_of_service');
     select.innerHTML = '<option value="">-- ይምረጡ --</option>' +
-        activeVehicles.map(v => `<option value="${v._id}">${v.plateNumber} - ${v.vehicleType}</option>`).join('');
+        activeVehicles.map(v => `<option value="${v._id}">${fleetEsc(v.plateNumber)} - ${fleetEsc(v.vehicleType)}</option>`).join('');
 }
 
 // Live client-side preview only — the server always recomputes and is the
@@ -2127,13 +2131,13 @@ function renderTripList() {
     tbody.innerHTML = fleetTrips.map(t => `
         <tr>
             <td>${t.tripDate}</td>
-            <td>${t.department}</td>
-            <td>${t.destination || '*'}</td>
-            <td>${t.vehiclePlate} (${t.vehicleType})</td>
+            <td>${fleetEsc(t.department)}</td>
+            <td>${fleetEsc(t.destination || '*')}</td>
+            <td>${fleetEsc(t.vehiclePlate)} (${fleetEsc(t.vehicleType)})</td>
             <td>${(t.departureKm||0).toLocaleString('en-US')} - ${(t.returnKm||0).toLocaleString('en-US')}</td>
             <td>${(t.distanceKm||0).toLocaleString('en-US')}</td>
             <td>${(t.estimatedFuelCost||0).toLocaleString('en-US')} ብር</td>
-            <td class="no-print"><button onclick="deleteTripLog('${t._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button></td>
+            <td class="no-print">${canDeleteEntry(t) ? `<button onclick="deleteTripLog('${t._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
         </tr>`).join('');
 }
 
@@ -2180,7 +2184,7 @@ let fleetMaintenance = [];
 
 function populateMaintenanceVehicleSelects() {
     const options = '<option value="">-- ይምረጡ --</option>' +
-        fleetVehicles.map(v => `<option value="${v._id}">${v.plateNumber} - ${v.vehicleType}</option>`).join('');
+        fleetVehicles.map(v => `<option value="${v._id}">${fleetEsc(v.plateNumber)} - ${fleetEsc(v.vehicleType)}</option>`).join('');
     const maintSelect = document.getElementById('maint-vehicle');
     if (maintSelect) maintSelect.innerHTML = options;
     const fuelSelect = document.getElementById('fuel-vehicle');
@@ -2203,7 +2207,7 @@ async function fetchMaintenanceList() {
 function maintenanceSignCellHtml(item, slot) {
     const person = slot === 'prepared' ? item.preparedBy : item.approvedBy;
     if (person && person.signatureImage) {
-        return `<span style="font-size:12px; color:#68d391;"><i class="fas fa-check-circle"></i> ${person.fullName}</span>`;
+        return `<span style="font-size:12px; color:#68d391;"><i class="fas fa-check-circle"></i> ${fleetEsc(person.fullName)}</span>`;
     }
     if (slot === 'prepared') {
         return `<button class="btn-submit no-print" style="padding:5px 9px; font-size:11.5px;" onclick="promptAndSign('${item._id}', 'prepared', 'maintenance')"><i class="fas fa-signature"></i> ፈርም</button>`;
@@ -2236,13 +2240,13 @@ function renderMaintenanceList() {
     tbody.innerHTML = fleetMaintenance.map(item => `
         <tr>
             <td>${item.date}</td>
-            <td>${item.vehiclePlate} (${item.vehicleType})</td>
+            <td>${fleetEsc(item.vehiclePlate)} (${fleetEsc(item.vehicleType)})</td>
             <td>${typeLabels[item.maintenanceType] || item.maintenanceType}</td>
-            <td>${item.description || '-'}</td>
+            <td>${fleetEsc(item.description || '-')}</td>
             <td>${(item.cost||0).toLocaleString('en-US')} ብር</td>
             <td>${maintenanceSignCellHtml(item, 'prepared')}</td>
             <td>${maintenanceSignCellHtml(item, 'approved')}</td>
-            <td class="no-print">${!item.preparedBy ? `<button onclick="deleteMaintenance('${item._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
+            <td class="no-print">${(!item.preparedBy && canDeleteEntry(item)) ? `<button onclick="deleteMaintenance('${item._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
         </tr>`).join('');
 }
 
@@ -2305,12 +2309,12 @@ function renderFuelLogList() {
     tbody.innerHTML = fleetFuelLogs.map(f => `
         <tr>
             <td>${f.date}</td>
-            <td>${f.vehiclePlate} (${f.vehicleType})</td>
-            <td>${f.station || '-'}</td>
+            <td>${fleetEsc(f.vehiclePlate)} (${fleetEsc(f.vehicleType)})</td>
+            <td>${fleetEsc(f.station || '-')}</td>
             <td>${(f.liters||0).toLocaleString('en-US')}</td>
             <td>${(f.cost||0).toLocaleString('en-US')} ብር</td>
             <td>${(f.odometerKm||0).toLocaleString('en-US')}</td>
-            <td class="no-print"><button onclick="deleteFuelLog('${f._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button></td>
+            <td class="no-print">${canDeleteEntry(f) ? `<button onclick="deleteFuelLog('${f._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
         </tr>`).join('');
 }
 
@@ -2540,7 +2544,7 @@ function renderFleetReportPreview() {
 
 // ---- Excel export (professional layout, built with ExcelJS) ----
 const FLEET_REPORT_ORG_NAME = 'Fountain International Trading PLC';
-const FLEET_REPORT_ORG_SUB = 'ፋውንቴን ኢንተርናሽናል ትሬዲንግ ኃ/የተ/የግ/ ማህበር';
+const FLEET_REPORT_ORG_SUB = 'Life Network Builders Association';
 const FLEET_WEEKDAYS_AM = ['እሑድ', 'ሰኞ', 'ማክሰኞ', 'ረቡዕ', 'ሐሙስ', 'ዓርብ', 'ቅዳሜ'];
 
 function fleetWeekdayAm(iso) {
@@ -2779,7 +2783,9 @@ const ACCESS_MODULES = [
     { key: 'fleet_trips', label: 'የአጠቃቀም ምዝገባ', menu: 'menu-fleet-trips', section: 'fleet-trips-sec', group: 'fleet' },
     { key: 'fleet_maintenance', label: 'ጥገና ምዝገባ', menu: 'menu-fleet-maintenance', section: 'fleet-maintenance-sec', group: 'fleet' },
     { key: 'fleet_fuel', label: 'ነዳጅ ምዝገባ', menu: 'menu-fleet-fuel', section: 'fleet-fuel-sec', group: 'fleet' },
-    { key: 'fleet_report', label: 'ሳምንታዊ ሪፖርት (ፍሊት)', menu: 'menu-fleet-report', section: 'fleet-report-sec', group: 'fleet' }
+    { key: 'fleet_report', label: 'ሳምንታዊ ሪፖርት (ፍሊት)', menu: 'menu-fleet-report', section: 'fleet-report-sec', group: 'fleet' },
+    // No menu of its own: lets someone (e.g. the fleet officer) see fleet entries made by OTHER people.
+    { key: 'fleet_view_all', label: 'ሌሎች የመዘገቡትን የፍሊት ምዝገባዎችም ማየት (ለፍሊት ኃላፊ/ለሪፖርት አዘጋጅ)', menu: null, section: null, group: 'fleet' }
 ];
 let usersCache = [];
 // null = unrestricted (Admin, or an older session/account without a list).
@@ -2796,13 +2802,17 @@ function canOpenSection(sectionId) {
     const mod = ACCESS_MODULES.find(m => m.section === sectionId);
     return mod ? canUseModule(mod.key) : true;
 }
+// A person may delete only their own fleet entries (Admin: any).
+function canDeleteEntry(item) {
+    return !!currentUser && (currentUser.role === 'Admin' || (item && item.userId === currentUser.id));
+}
 
 function applyMyAccess() {
     ACCESS_MODULES.forEach(m => {
         const el = document.getElementById(m.menu);
         if (el) el.style.display = canUseModule(m.key) ? '' : 'none';
     });
-    const anyFleet = ACCESS_MODULES.some(m => m.group === 'fleet' && canUseModule(m.key));
+    const anyFleet = ACCESS_MODULES.some(m => m.group === 'fleet' && m.menu && canUseModule(m.key));
     const fleetLabel = document.getElementById('menu-fleet-label');
     if (fleetLabel) fleetLabel.style.display = anyFleet ? '' : 'none';
 
@@ -2811,7 +2821,7 @@ function applyMyAccess() {
     const activeMenu = document.querySelector('.sidebar-item.active');
     const activeMod = activeMenu ? ACCESS_MODULES.find(m => m.menu === activeMenu.id) : null;
     if (activeMod && !canUseModule(activeMod.key)) {
-        const first = ACCESS_MODULES.find(m => canUseModule(m.key));
+        const first = ACCESS_MODULES.find(m => m.section && canUseModule(m.key));
         if (first) {
             showSection(first.section, first.menu);
         } else {
@@ -2874,7 +2884,7 @@ function openAccessModal(userId) {
     accessModalUserId = userId;
     document.getElementById('access-modal-title').innerText = `የሚያያቸው ክፍሎች — ${u.fullName || u.username}`;
     // An account with no list yet currently sees everything, so start with all ticked.
-    const selected = Array.isArray(u.access) ? u.access : ACCESS_MODULES.map(m => m.key);
+    const selected = Array.isArray(u.access) ? u.access : ACCESS_MODULES.filter(m => m.key !== 'fleet_view_all').map(m => m.key);
     renderAccessCheckboxes('access-modal-box', selected, 'modal-access-cb');
     document.getElementById('access-modal').style.display = 'flex';
 }
