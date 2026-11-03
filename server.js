@@ -180,7 +180,7 @@ function requirePermission(perm) {
 // ===== Per-module access (which sections a user may see / use) =====
 const ACCESS_MODULES = [
     'dashboard', 'payments', 'contracts', 'gallery', 'report', 'signature', 'trash',
-    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report',
+    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report', 'fleet_finance',
     'fleet_view_all' // lets a fleet officer see fleet entries made by OTHER people
 ];
 
@@ -1449,7 +1449,9 @@ const Vehicle = mongoose.model('Vehicle', vehicleSchema);
 const fleetSettingsSchema = new mongoose.Schema({
     key: { type: String, default: 'main', unique: true },
     dieselPricePerLiter: { type: Number, default: 0 },
-    benzinePricePerLiter: { type: Number, default: 0 }
+    benzinePricePerLiter: { type: Number, default: 0 },
+    updatedByName: { type: String, default: '' },
+    updatedAt: { type: Date, default: null }
 });
 const FleetSettings = mongoose.model('FleetSettings', fleetSettingsSchema);
 
@@ -1523,6 +1525,14 @@ function canViewAllFleet(req) {
 function fleetScope(req) {
     return canViewAllFleet(req) ? {} : { userId: req.authUser.id };
 }
+// Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD for the report pages.
+function dateRangeFilter(query, field) {
+    const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+    const r = {};
+    if (isoRe.test(query.from || '')) r.$gte = query.from;
+    if (isoRe.test(query.to || '')) r.$lte = query.to;
+    return Object.keys(r).length ? { [field]: r } : {};
+}
 function maintenanceScope(req) {
     if (canViewAllFleet(req)) return {};
     const me = req.authUser.id;
@@ -1560,7 +1570,7 @@ async function uploadFleetFile(file, folder) {
 }
 
 // ---------- Vehicles ----------
-app.get('/api/fleet/vehicles', requireAuth, requireModule('fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report'), async (req, res) => {
+app.get('/api/fleet/vehicles', requireAuth, requireModule('fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report', 'fleet_finance'), async (req, res) => {
     try {
         const list = await Vehicle.find({ isDeleted: { $ne: true } }).sort({ createdAt: -1 });
         res.json(list);
@@ -1669,37 +1679,41 @@ app.post('/api/fleet/vehicles/:id/restore', requireAdmin, async (req, res) => {
 });
 
 // ---------- Fuel price settings & departments ----------
-app.get('/api/fleet/settings', requireAuth, requireModule('fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report'), async (req, res) => {
+app.get('/api/fleet/settings', requireAuth, requireModule('fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report', 'fleet_finance'), async (req, res) => {
     try {
         const s = await getFleetSettings();
-        res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter });
+        res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter, updatedByName: s.updatedByName || '', updatedAt: s.updatedAt || null });
     } catch (err) {
         logError('Fleet get settings error:', err);
         res.status(500).json({ error: 'ቅንብር ማምጣት አልተቻለም' });
     }
 });
-app.put('/api/fleet/settings', requireAdmin, async (req, res) => {
+// The current fuel price changes often, so whoever registers fuel / trips (not
+// only the Admin) can update it. Who changed it and when is remembered.
+app.put('/api/fleet/settings', requireAuth, requireModule('fleet_trips', 'fleet_fuel'), requirePermission('prepare'), async (req, res) => {
     try {
         const diesel = toNum(req.body.dieselPricePerLiter, 0);
         const benzine = toNum(req.body.benzinePricePerLiter, 0);
         if (diesel < 0 || benzine < 0) return res.status(400).json({ error: 'ዋጋ አሉታዊ መሆን አይችልም' });
+        if (diesel > 10000 || benzine > 10000) return res.status(400).json({ error: 'ዋጋው ከመጠን በላይ ነው፤ እባክዎ በአንድ ሊትር ዋጋ ያስገቡ' });
+        const who = (req.authUserDoc && (req.authUserDoc.fullName || req.authUserDoc.username)) || '';
         const s = await FleetSettings.findOneAndUpdate(
             { key: 'main' },
-            { dieselPricePerLiter: diesel, benzinePricePerLiter: benzine },
+            { dieselPricePerLiter: diesel, benzinePricePerLiter: benzine, updatedByName: who, updatedAt: new Date() },
             { new: true, upsert: true }
         );
-        res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter });
+        res.json({ dieselPricePerLiter: s.dieselPricePerLiter, benzinePricePerLiter: s.benzinePricePerLiter, updatedByName: s.updatedByName || '', updatedAt: s.updatedAt || null });
     } catch (err) {
         logError('Fleet save settings error:', err);
         res.status(500).json({ error: 'ማስቀመጥ አልተቻለም' });
     }
 });
-app.get('/api/fleet/departments', requireAuth, requireModule('fleet_trips', 'fleet_report'), (req, res) => {
+app.get('/api/fleet/departments', requireAuth, requireModule('fleet_trips', 'fleet_report', 'fleet_finance'), (req, res) => {
     res.json(FLEET_DEPARTMENTS);
 });
 
 // ---------- Trips (የአጠቃቀም ምዝገባ) ----------
-app.get('/api/fleet/trips', requireAuth, requireModule('fleet_trips', 'fleet_report'), async (req, res) => {
+app.get('/api/fleet/trips', requireAuth, requireModule('fleet_trips', 'fleet_report', 'fleet_finance'), async (req, res) => {
     try {
         // Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD — used by the weekly/range
         // report. Without them the list behaves exactly as before.
@@ -1778,9 +1792,12 @@ app.delete('/api/fleet/trips/:id', requireAuth, requireModule('fleet_trips'), re
 });
 
 // ---------- Maintenance (with prepare → send → approve workflow) ----------
-app.get('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance'), async (req, res) => {
+app.get('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance', 'fleet_finance'), async (req, res) => {
     try {
-        const list = await Maintenance.find(maintenanceScope(req)).sort({ date: -1, createdAt: -1 }).limit(500);
+        const range = dateRangeFilter(req.query, 'date');
+        const ranged = Object.keys(range).length > 0;
+        const filter = ranged ? { $and: [maintenanceScope(req), range] } : maintenanceScope(req);
+        const list = await Maintenance.find(filter).sort({ date: -1, createdAt: -1 }).limit(ranged ? 5000 : 500);
         res.json(list);
     } catch (err) {
         logError('Fleet get maintenance error:', err);
@@ -1826,6 +1843,66 @@ app.post('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance
         res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
     }
 });
+// Edit a maintenance entry. The person who made it (or an Admin) can edit it
+// until it is approved; after approval only an Admin can. If it had already
+// been signed, the signatures no longer describe what is on the form, so they
+// are cleared and it has to be signed again.
+app.put('/api/fleet/maintenance/:id', requireAuth, requireModule('fleet_maintenance'), requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
+    try {
+        const item = await Maintenance.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        const isAdmin = req.authUser.role === 'Admin';
+        if (!isAdmin && item.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ ማስተካከል አይችሉም' });
+        }
+        if (!isAdmin && item.approvedBy && item.approvedBy.userId) {
+            return res.status(403).json({ error: 'የጸደቀ ምዝገባ Admin ብቻ ማስተካከል ይችላል' });
+        }
+
+        const { vehicleId, date, maintenanceType, garage, description, nextServiceDate } = req.body;
+        if (!date) return res.status(400).json({ error: 'ቀን ያስፈልጋል' });
+        const cost = toNum(req.body.cost, NaN);
+        if (isNaN(cost) || cost < 0) return res.status(400).json({ error: 'ትክክለኛ ወጪ ያስገቡ' });
+        const vehicle = await Vehicle.findById(vehicleId || item.vehicleId);
+        if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+
+        const set = {
+            vehicleId: vehicle._id.toString(),
+            vehiclePlate: vehicle.plateNumber,
+            vehicleType: vehicle.vehicleType,
+            date,
+            odometerKm: toNum(req.body.odometerKm, 0),
+            maintenanceType: ['routine', 'repair'].includes(maintenanceType) ? maintenanceType : 'routine',
+            cost,
+            garage: String(garage || '').trim(),
+            description: String(description || '').trim(),
+            nextServiceKm: toNum(req.body.nextServiceKm, null),
+            nextServiceDate: nextServiceDate || ''
+        };
+        if (req.file) {
+            try { set.receipt = await uploadFleetFile(req.file, 'fountain-fleet-receipts'); }
+            catch (upErr) {
+                logError('Fleet maintenance receipt upload error:', upErr);
+                return res.status(500).json({ error: 'ደረሰኙን መጫን አልተቻለም' });
+            }
+        }
+
+        const wasSigned = !!((item.preparedBy && item.preparedBy.userId)
+            || (item.approvedBy && item.approvedBy.userId)
+            || (item.approval && item.approval.pendingApproverId));
+        const ops = { $set: set };
+        if (wasSigned) ops.$unset = { preparedBy: 1, approvedBy: 1, approval: 1 };
+        const updated = await Maintenance.findByIdAndUpdate(item._id, ops, { new: true });
+        if (wasSigned) {
+            try { await Notification.deleteMany({ recordId: item._id.toString(), module: 'fleet_maintenance' }); }
+            catch (nErr) { logError('Clear maintenance notifications error:', nErr); }
+        }
+        res.json(updated);
+    } catch (err) {
+        logError('Fleet edit maintenance error:', err);
+        res.status(500).json({ error: 'ማስተካከል አልተቻለም' });
+    }
+});
 app.delete('/api/fleet/maintenance/:id', requireAuth, requireModule('fleet_maintenance'), requirePermission('prepare'), async (req, res) => {
     try {
         const item = await Maintenance.findById(req.params.id);
@@ -1833,10 +1910,12 @@ app.delete('/api/fleet/maintenance/:id', requireAuth, requireModule('fleet_maint
         if (req.authUser.role !== 'Admin' && item.userId !== req.authUser.id) {
             return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ መሰረዝ አይችሉም' });
         }
-        if (item.preparedBy && item.preparedBy.userId) {
-            return res.status(400).json({ error: 'የተፈረመበትን ምዝገባ መሰረዝ አይቻልም' });
+        if (req.authUser.role !== 'Admin' && item.approvedBy && item.approvedBy.userId) {
+            return res.status(403).json({ error: 'የጸደቀ ምዝገባ Admin ብቻ መሰረዝ ይችላል' });
         }
         await item.deleteOne();
+        try { await Notification.deleteMany({ recordId: item._id.toString(), module: 'fleet_maintenance' }); }
+        catch (nErr) { logError('Clear maintenance notifications error:', nErr); }
         res.json({ message: 'ተሰርዟል' });
     } catch (err) {
         logError('Fleet delete maintenance error:', err);
@@ -1926,9 +2005,11 @@ app.post('/api/fleet/maintenance/:id/sign', requireAuth, requireModule('fleet_ma
 });
 
 // ---------- Fuel log (actual receipts) ----------
-app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel'), async (req, res) => {
+app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel', 'fleet_finance'), async (req, res) => {
     try {
-        const list = await FuelLog.find(fleetScope(req)).sort({ date: -1, createdAt: -1 }).limit(500);
+        const range = dateRangeFilter(req.query, 'date');
+        const ranged = Object.keys(range).length > 0;
+        const list = await FuelLog.find({ ...fleetScope(req), ...range }).sort({ date: -1, createdAt: -1 }).limit(ranged ? 5000 : 500);
         res.json(list);
     } catch (err) {
         logError('Fleet get fuel logs error:', err);
