@@ -341,8 +341,9 @@ function showSection(sectionId, menuId) {
     if (sectionId === 'fleet-vehicles-sec') { fetchVehicles(); resetVehicleForm(); }
     if (sectionId === 'fleet-trips-sec') { fetchVehicles(); fetchTripLogs(); loadFleetDepartments(); loadFuelPriceSettings(); }
     if (sectionId === 'fleet-maintenance-sec') { fetchVehicles(); fetchMaintenanceList(); }
-    if (sectionId === 'fleet-fuel-sec') { fetchVehicles(); fetchFuelLogs(); }
+    if (sectionId === 'fleet-fuel-sec') { fetchVehicles(); fetchFuelLogs(); loadFuelPriceSettings(); }
     if (sectionId === 'fleet-report-sec') initFleetReportSection();
+    if (sectionId === 'fleet-finance-sec') initFleetFinanceSection();
     // Chart.js needs a visible (non-zero-size) canvas to size itself
     // correctly, so redraw the dashboard charts right after it becomes visible.
     if (sectionId === 'dashboard-sec') renderDashboardCharts();
@@ -2039,32 +2040,65 @@ async function restoreVehicle(id) {
 }
 
 // ---------- Fuel price settings ----------
+function fuelPriceMetaText(st) {
+    if (!st || !st.updatedAt) return '';
+    return `መጨረሻ የቀየረው፦ ${st.updatedByName || '-'} (${isoToEthText(dateToISO(new Date(st.updatedAt)))} ዓ.ም)`;
+}
+function showFuelPricesInBoxes(st) {
+    ['', '2'].forEach(w => {
+        setAmountValue(`fuel${w}-price-diesel`, st.dieselPricePerLiter || '');
+        setAmountValue(`fuel${w}-price-benzine`, st.benzinePricePerLiter || '');
+        const meta = document.getElementById(`fuel${w}-price-meta`);
+        if (meta) meta.textContent = fuelPriceMetaText(st);
+    });
+}
 async function loadFuelPriceSettings() {
     try {
         const res = await authFetch('/api/fleet/settings');
-        fleetSettings = await res.json();
-        setAmountValue('fuel-price-diesel', fleetSettings.dieselPricePerLiter || '');
-        setAmountValue('fuel-price-benzine', fleetSettings.benzinePricePerLiter || '');
+        const data = await res.json();
+        if (!res.ok) return;
+        fleetSettings = data;
+        showFuelPricesInBoxes(data);
+        autoFillFuelCost();
     } catch (err) {
         console.log('ቅንብር ማምጣት አልተቻለም');
     }
 }
-async function saveFuelPrices() {
+// `which` is '' for the box on the trips page and '2' for the one on the fuel page.
+async function saveFuelPrices(which) {
+    const w = which || '';
     try {
         const res = await authFetch('/api/fleet/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                dieselPricePerLiter: getAmountValue('fuel-price-diesel') || 0,
-                benzinePricePerLiter: getAmountValue('fuel-price-benzine') || 0
+                dieselPricePerLiter: getAmountValue(`fuel${w}-price-diesel`) || 0,
+                benzinePricePerLiter: getAmountValue(`fuel${w}-price-benzine`) || 0
             })
         });
-        fleetSettings = await res.json();
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ማስቀመጥ አልተቻለም'); return; }
+        fleetSettings = data;
+        showFuelPricesInBoxes(data);
         alert('ዋጋው ተቀምጧል');
         updateTripEstimate();
+        autoFillFuelCost();
     } catch (err) {
         alert('ማስቀመጥ አልተቻለም');
     }
+}
+
+// Fills the purchase price from litres x today's price for that vehicle's fuel
+// type, until the person types a price themselves.
+function autoFillFuelCost() {
+    const costEl = document.getElementById('fuel-cost');
+    if (!costEl || costEl.dataset.manual === '1') return;
+    const vehicle = fleetVehicles.find(v => v._id === document.getElementById('fuel-vehicle').value);
+    const liters = getAmountValue('fuel-liters');
+    if (!vehicle || isNaN(liters)) return;
+    const price = vehicle.fuelType === 'ቤንዚን' ? fleetSettings.benzinePricePerLiter : fleetSettings.dieselPricePerLiter;
+    if (!price) return;
+    setAmountValue('fuel-cost', Math.round(liters * price * 100) / 100);
 }
 
 // ---------- Departments ----------
@@ -2229,6 +2263,14 @@ function maintenanceSignCellHtml(item, slot) {
 // for the Admin-override path (permissions themselves aren't sent to the
 // client at login — the server is always the real authority on those).
 
+// The person who made an entry may edit/delete it until it is approved; an
+// Admin may always (the server enforces the same rule).
+function canEditMaintenance(item) {
+    if (!currentUser) return false;
+    if (currentUser.role === 'Admin') return true;
+    return item.userId === currentUser.id && !(item.approvedBy && item.approvedBy.userId);
+}
+
 function renderMaintenanceList() {
     const tbody = document.getElementById('maint-data-list');
     if (!tbody) return;
@@ -2246,8 +2288,50 @@ function renderMaintenanceList() {
             <td>${(item.cost||0).toLocaleString('en-US')} ብር</td>
             <td>${maintenanceSignCellHtml(item, 'prepared')}</td>
             <td>${maintenanceSignCellHtml(item, 'approved')}</td>
-            <td class="no-print">${(!item.preparedBy && canDeleteEntry(item)) ? `<button onclick="deleteMaintenance('${item._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
+            <td class="no-print" style="white-space:nowrap;">${canEditMaintenance(item) ? `<button onclick="startMaintenanceEdit('${item._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px; margin-right:4px;" title="አስተካክል"><i class="fas fa-edit"></i></button><button onclick="deleteMaintenance('${item._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
         </tr>`).join('');
+}
+
+let maintEditId = null;
+
+function setMaintenanceFormMode(editing) {
+    const title = document.getElementById('maint-form-title');
+    const submit = document.getElementById('maint-submit-btn');
+    const cancel = document.getElementById('maint-cancel-btn');
+    if (title) title.innerHTML = editing ? '<i class="fas fa-edit"></i> ጥገና/አገልግሎት አስተካክል' : '<i class="fas fa-tools"></i> አዲስ ጥገና/አገልግሎት መዝግብ';
+    if (submit) submit.innerHTML = editing ? '<i class="fas fa-save"></i> ለውጡን አስቀምጥ' : '<i class="fas fa-save"></i> መዝግብ';
+    if (cancel) cancel.style.display = editing ? 'inline-block' : 'none';
+}
+
+function startMaintenanceEdit(id) {
+    const item = fleetMaintenance.find(x => x._id === id);
+    if (!item) return;
+    if ((item.preparedBy && item.preparedBy.userId) || (item.approvedBy && item.approvedBy.userId)) {
+        if (!confirm('ይህ ምዝገባ ተፈርሞበታል። ካስተካከሉት ፊርማዎቹ ይሰረዛሉ፤ እንደገና መፈረም እና ለማጽደቅ መላክ ያስፈልጋል። ይቀጥሉ?')) return;
+    }
+    maintEditId = id;
+    const sel = document.getElementById('maint-vehicle');
+    if (!Array.from(sel.options).some(o => o.value === item.vehicleId)) {
+        sel.add(new Option(`${item.vehiclePlate} (${item.vehicleType})`, item.vehicleId));
+    }
+    sel.value = item.vehicleId;
+    document.getElementById('maint-date').value = item.date || '';
+    setAmountValue('maint-odometer', item.odometerKm || '');
+    document.getElementById('maint-type').value = item.maintenanceType || 'routine';
+    setAmountValue('maint-cost', item.cost || 0);
+    document.getElementById('maint-garage').value = item.garage || '';
+    document.getElementById('maint-description').value = item.description || '';
+    setAmountValue('maint-next-km', item.nextServiceKm || '');
+    document.getElementById('maint-next-date').value = item.nextServiceDate || '';
+    document.getElementById('maint-receipt').value = '';
+    setMaintenanceFormMode(true);
+    document.getElementById('maintenance-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function cancelMaintenanceEdit() {
+    maintEditId = null;
+    document.getElementById('maintenance-form').reset();
+    setMaintenanceFormMode(false);
 }
 
 async function handleMaintenanceSubmit(e) {
@@ -2265,21 +2349,31 @@ async function handleMaintenanceSubmit(e) {
     const receiptFile = document.getElementById('maint-receipt').files[0];
     if (receiptFile) fd.append('receipt', receiptFile);
 
+    const editing = maintEditId;
     try {
-        const res = await authFetch('/api/fleet/maintenance', { method: 'POST', body: fd });
+        const res = await authFetch(editing ? `/api/fleet/maintenance/${editing}` : '/api/fleet/maintenance', { method: editing ? 'PUT' : 'POST', body: fd });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
-        document.getElementById('maintenance-form').reset();
+        cancelMaintenanceEdit();
         fetchMaintenanceList();
     } catch (err) {
-        alert('መመዝገብ አልተቻለም');
+        alert(editing ? 'ማስተካከል አልተቻለም' : 'መመዝገብ አልተቻለም');
     }
 }
 
 async function deleteMaintenance(id) {
-    if (!confirm('ይህን የጥገና ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
+    const item = fleetMaintenance.find(x => x._id === id);
+    const signed = item && ((item.preparedBy && item.preparedBy.userId) || (item.approvedBy && item.approvedBy.userId));
+    if (!confirm(signed ? 'ይህ ምዝገባ ተፈርሞበታል። መሰረዝ ይፈልጋሉ?' : 'ይህን የጥገና ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
     try {
-        await authFetch(`/api/fleet/maintenance/${id}`, { method: 'DELETE' });
+        const res = await authFetch(`/api/fleet/maintenance/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            let d = {};
+            try { d = await res.json(); } catch (parseErr) {}
+            alert(d.error || 'ማጥፋት አልተቻለም');
+            return;
+        }
+        if (maintEditId === id) cancelMaintenanceEdit();
         fetchMaintenanceList();
     } catch (err) {
         alert('ማጥፋት አልተቻለም');
@@ -2335,6 +2429,7 @@ async function handleFuelLogSubmit(e) {
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
         document.getElementById('fuel-form').reset();
+        delete document.getElementById('fuel-cost').dataset.manual;
         fetchFuelLogs();
     } catch (err) {
         alert('መመዝገብ አልተቻለም');
@@ -2784,6 +2879,7 @@ const ACCESS_MODULES = [
     { key: 'fleet_maintenance', label: 'ጥገና ምዝገባ', menu: 'menu-fleet-maintenance', section: 'fleet-maintenance-sec', group: 'fleet' },
     { key: 'fleet_fuel', label: 'ነዳጅ ምዝገባ', menu: 'menu-fleet-fuel', section: 'fleet-fuel-sec', group: 'fleet' },
     { key: 'fleet_report', label: 'ሳምንታዊ ሪፖርት (ፍሊት)', menu: 'menu-fleet-report', section: 'fleet-report-sec', group: 'fleet' },
+    { key: 'fleet_finance', label: 'የፍሊት ፋይናንስ ሪፖርት (በብር)', menu: 'menu-fleet-finance', section: 'fleet-finance-sec', group: 'fleet' },
     // No menu of its own: lets someone (e.g. the fleet officer) see fleet entries made by OTHER people.
     { key: 'fleet_view_all', label: 'ሌሎች የመዘገቡትን የፍሊት ምዝገባዎችም ማየት (ለፍሊት ኃላፊ/ለሪፖርት አዘጋጅ)', menu: null, section: null, group: 'fleet' }
 ];
@@ -2815,6 +2911,11 @@ function applyMyAccess() {
     const anyFleet = ACCESS_MODULES.some(m => m.group === 'fleet' && m.menu && canUseModule(m.key));
     const fleetLabel = document.getElementById('menu-fleet-label');
     if (fleetLabel) fleetLabel.style.display = anyFleet ? '' : 'none';
+    // Today's fuel price is set by whoever registers trips / fuel, not only the Admin.
+    const priceBox1 = document.getElementById('fleet-fuel-price-box');
+    if (priceBox1) priceBox1.style.display = canUseModule('fleet_trips') ? 'block' : 'none';
+    const priceBox2 = document.getElementById('fleet-fuel-price-box-2');
+    if (priceBox2) priceBox2.style.display = canUseModule('fleet_fuel') ? 'block' : 'none';
 
     // If the page opened on a section this person may not use (the dashboard
     // is the default landing page), move them to the first one they can.
@@ -2916,3 +3017,311 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshMyAccess();
     if (currentUser && currentUser.role === 'Admin') renderAccessCheckboxes('reg-access-box', [], 'reg-access-cb');
 });
+
+
+// =====================================================================
+// ===== Fleet FINANCE report (የፍሊት ፋይናንስ ሪፖርት) — everything in birr =====
+// =====================================================================
+// Combines, for a chosen period: fuel actually bought (receipts), maintenance
+// cost, and — for comparison — the estimated fuel cost of the recorded trips.
+// The "total cost" is receipts + maintenance only (the trip estimate would
+// count the same fuel twice). Allowances (አበል) will be added here too.
+let fleetFinanceData = null;
+
+function initFleetFinanceSection() {
+    const fromEl = document.getElementById('ffin-from');
+    const toEl = document.getElementById('ffin-to');
+    if (fromEl && toEl && (!fromEl.value || !toEl.value)) setFleetFinancePreset(30);
+    else updateFleetFinanceEthLabel();
+}
+function setFleetFinancePreset(days) {
+    const to = dateToISO(new Date());
+    document.getElementById('ffin-to').value = to;
+    document.getElementById('ffin-from').value = addDaysISO(to, -(days - 1));
+    updateFleetFinanceEthLabel();
+}
+function updateFleetFinanceEthLabel() {
+    const from = document.getElementById('ffin-from').value;
+    const to = document.getElementById('ffin-to').value;
+    const label = document.getElementById('ffin-eth-label');
+    if (!label) return;
+    label.textContent = (from && to) ? `ከ ${isoToEthText(from)} እስከ ${isoToEthText(to)} (ዓ.ም) — ${daysBetweenISO(from, to)} ቀን` : '';
+}
+
+function fleetMaintStatusText(m) {
+    if (m.approvedBy && m.approvedBy.userId) return 'ተጸድቋል';
+    if (m.approval && m.approval.pendingApproverId) return 'ለማጽደቅ ተልኳል';
+    if (m.preparedBy && m.preparedBy.userId) return 'ተፈርሟል';
+    return 'ያልተፈረመ';
+}
+
+function fleetFinanceModel(d) {
+    const round2 = n => Math.round(n * 100) / 100;
+    const vehicleKey = x => `${String(x.vehiclePlate || '').trim()} (${fleetVehicleLabel(x)})`;
+    const vMap = new Map();
+    const vget = x => {
+        const k = vehicleKey(x);
+        if (!vMap.has(k)) vMap.set(k, { label: k, trips: 0, km: 0, est: 0, liters: 0, fuelCost: 0, maintCost: 0 });
+        return vMap.get(k);
+    };
+    d.trips.forEach(t => { const v = vget(t); v.trips += 1; v.km += t.distanceKm || 0; v.est += t.estimatedFuelCost || 0; });
+    d.fuel.forEach(f => { const v = vget(f); v.liters += f.liters || 0; v.fuelCost += f.cost || 0; });
+    d.maint.forEach(x => { const v = vget(x); v.maintCost += x.cost || 0; });
+    const vehicles = Array.from(vMap.values()).map(v => ({
+        label: v.label, trips: v.trips, km: v.km, est: round2(v.est), liters: round2(v.liters),
+        fuelCost: round2(v.fuelCost), maintCost: round2(v.maintCost), total: round2(v.fuelCost + v.maintCost)
+    })).sort((a, b) => (b.total - a.total) || (b.km - a.km));
+
+    const dMap = new Map();
+    d.trips.forEach(t => {
+        const k = String(t.department || '').trim() || 'ያልታወቀ';
+        if (!dMap.has(k)) dMap.set(k, { name: k, trips: 0, km: 0, est: 0 });
+        const r = dMap.get(k);
+        r.trips += 1; r.km += t.distanceKm || 0; r.est += t.estimatedFuelCost || 0;
+    });
+    const depts = Array.from(dMap.values()).map(r => ({ name: r.name, trips: r.trips, km: r.km, est: round2(r.est) }))
+        .sort((a, b) => b.est - a.est);
+
+    const fuelCost = round2(d.fuel.reduce((s, f) => s + (f.cost || 0), 0));
+    const maintCost = round2(d.maint.reduce((s, x) => s + (x.cost || 0), 0));
+    const est = round2(d.trips.reduce((s, t) => s + (t.estimatedFuelCost || 0), 0));
+    return { vehicles, depts, fuelCost, maintCost, total: round2(fuelCost + maintCost), est };
+}
+
+async function generateFleetFinance() {
+    const from = document.getElementById('ffin-from').value;
+    const to = document.getElementById('ffin-to').value;
+    if (!from || !to) { alert('እባክዎ ከቀን እና እስከ ቀን ይምረጡ'); return; }
+    if (from > to) { alert('"ከቀን" ከ"እስከ ቀን" መቅደም አለበት'); return; }
+    if (daysBetweenISO(from, to) > 366) { alert('ከአንድ ዓመት በላይ መምረጥ አይቻልም'); return; }
+    const q = `?from=${from}&to=${to}`;
+    try {
+        const [trRes, fuRes, maRes] = await Promise.all([
+            authFetch('/api/fleet/trips' + q),
+            authFetch('/api/fleet/fuel-logs' + q),
+            authFetch('/api/fleet/maintenance' + q)
+        ]);
+        const [tr, fu, ma] = await Promise.all([trRes.json(), fuRes.json(), maRes.json()]);
+        const failed = [[trRes, tr], [fuRes, fu], [maRes, ma]].find(p => !p[0].ok);
+        if (failed) { alert((failed[1] && failed[1].error) || 'ሪፖርቱን ማምጣት አልተቻለም'); return; }
+        fleetFinanceData = {
+            from, to,
+            trips: Array.isArray(tr) ? tr : [],
+            fuel: Array.isArray(fu) ? fu : [],
+            maint: Array.isArray(ma) ? ma : []
+        };
+        renderFleetFinancePreview();
+        document.getElementById('ffin-download-btn').disabled = false;
+    } catch (err) {
+        alert('ሪፖርቱን ማምጣት አልተቻለም');
+    }
+}
+
+function renderFleetFinancePreview() {
+    if (!fleetFinanceData) return;
+    const d = fleetFinanceData;
+    const m = fleetFinanceModel(d);
+    const money = n => (n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const num = n => (n || 0).toLocaleString('en-US');
+    const empty = cols => `<tr><td colspan="${cols}" style="text-align:center; color:#a0aec0;">በዚህ ጊዜ ምንም ምዝገባ የለም</td></tr>`;
+
+    document.getElementById('ffin-result').style.display = 'block';
+    document.getElementById('ffin-title').innerHTML = `<i class="fas fa-coins"></i> ማጠቃለያ — ከቀን ${fleetEsc(isoToEthText(d.from))} እስከ ${fleetEsc(isoToEthText(d.to))}`;
+    document.getElementById('ffin-summary-list').innerHTML = `
+        <tr><td>1</td><td>የነዳጅ ግዢ (በደረሰኝ፣ ${num(d.fuel.length)} ምዝገባ)</td><td>${money(m.fuelCost)}</td></tr>
+        <tr><td>2</td><td>የጥገና ወጪ (${num(d.maint.length)} ምዝገባ)</td><td>${money(m.maintCost)}</td></tr>
+        <tr style="font-weight:bold;"><td></td><td>ጠቅላላ ወጪ</td><td>${money(m.total)}</td></tr>
+        <tr style="color:#a0aec0;"><td></td><td>ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
+    document.getElementById('ffin-vehicle-list').innerHTML = m.vehicles.length ? m.vehicles.map((v, i) => `
+        <tr>
+            <td>${i + 1}</td><td>${fleetEsc(v.label)}</td><td>${num(v.trips)}</td><td>${num(v.km)}</td>
+            <td>${money(v.est)}</td><td>${num(v.liters)}</td><td>${money(v.fuelCost)}</td><td>${money(v.maintCost)}</td>
+            <td><strong>${money(v.total)}</strong></td>
+        </tr>`).join('') : empty(9);
+    document.getElementById('ffin-dept-list').innerHTML = m.depts.length ? m.depts.map((r, i) => `
+        <tr><td>${i + 1}</td><td>${fleetEsc(r.name)}</td><td>${num(r.trips)}</td><td>${num(r.km)}</td><td>${money(r.est)}</td></tr>`).join('') : empty(5);
+}
+
+// ---- shared Excel look for the finance sheet ----
+function makeFleetXlKit(ws, cols) {
+    const NAVY = 'FF1F4E78', LIGHT = 'FFDCE6F1', GREY = 'FFF2F2F2';
+    const side = { style: 'thin', color: { argb: 'FF7F7F7F' } };
+    const BORDER = { top: side, left: side, bottom: side, right: side };
+    const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+    function band(rowNum, text, opts) {
+        const o = Object.assign({ from: 1, to: cols, size: 11, bold: true, color: 'FF000000', bg: null, align: 'center', border: false, italic: false, height: null }, opts || {});
+        for (let c = o.from; c <= o.to; c++) {
+            const cell = ws.getCell(rowNum, c);
+            cell.font = { name: 'Calibri', size: o.size, bold: o.bold, italic: o.italic, color: { argb: o.color } };
+            cell.alignment = { horizontal: o.align, vertical: 'middle', wrapText: true };
+            if (o.bg) cell.fill = fill(o.bg);
+            if (o.border) cell.border = BORDER;
+        }
+        ws.getCell(rowNum, o.from).value = text;
+        if (o.to > o.from) ws.mergeCells(rowNum, o.from, rowNum, o.to);
+        if (o.height) ws.getRow(rowNum).height = o.height;
+    }
+    function headerRow(rowNum, labels) {
+        labels.forEach((text, i) => {
+            const cell = ws.getCell(rowNum, i + 1);
+            cell.value = text;
+            cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = fill(NAVY);
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            cell.border = BORDER;
+        });
+        ws.getRow(rowNum).height = 26;
+    }
+    function bodyCell(rowNum, col, value, opts) {
+        const o = Object.assign({ align: 'center', fmt: null, bold: false, bg: null }, opts || {});
+        const cell = ws.getCell(rowNum, col);
+        cell.value = value;
+        cell.font = { name: 'Calibri', size: 11, bold: o.bold };
+        cell.alignment = { horizontal: o.align, vertical: 'middle', wrapText: true };
+        cell.border = BORDER;
+        if (o.fmt) cell.numFmt = o.fmt;
+        if (o.bg) cell.fill = fill(o.bg);
+        return cell;
+    }
+    return { NAVY, LIGHT, GREY, band, headerRow, bodyCell };
+}
+
+// Writes a bordered table starting at row r; returns the next free row.
+// specs: per-column { align, fmt }; sums: { labelCol, label, cols: [..] } adds a total row of SUM formulas;
+// rowFormulas: { col: (rowNumber, rowArray) => ({ formula, result }) } for computed columns.
+function writeFleetXlTable(ws, kit, r, headers, rows, specs, sums, rowFormulas) {
+    const L = 'ABCDEFGHIJ';
+    kit.headerRow(r, headers);
+    r += 1;
+    if (!rows.length) {
+        kit.band(r, 'በዚህ ጊዜ ምንም ምዝገባ የለም', { to: headers.length, bold: false, italic: true, color: 'FF7F7F7F', border: true, height: 20 });
+        return r + 2;
+    }
+    const first = r;
+    rows.forEach(row => {
+        row.forEach((v, i) => {
+            let value = v;
+            if (rowFormulas && rowFormulas[i + 1]) value = rowFormulas[i + 1](r, row);
+            kit.bodyCell(r, i + 1, value, specs[i] || {});
+        });
+        r += 1;
+    });
+    const last = r - 1;
+    if (sums) {
+        for (let c = 1; c <= headers.length; c++) kit.bodyCell(r, c, null, { bg: kit.GREY });
+        kit.bodyCell(r, sums.labelCol, sums.label || 'ድምር', { align: 'left', bold: true, bg: kit.GREY });
+        sums.cols.forEach(c => {
+            const result = rows.reduce((s, row) => {
+                const cellVal = (rowFormulas && rowFormulas[c]) ? rowFormulas[c](0, row).result : row[c - 1];
+                return s + (Number(cellVal) || 0);
+            }, 0);
+            kit.bodyCell(r, c, { formula: `SUM(${L[c - 1]}${first}:${L[c - 1]}${last})`, result }, Object.assign({}, specs[c - 1] || {}, { bold: true, bg: kit.GREY }));
+        });
+        r += 1;
+    }
+    return r + 1;
+}
+
+function buildFleetFinanceWorkbook(data, logo) {
+    const m = fleetFinanceModel(data);
+    const ethFrom = isoToEthText(data.from), ethTo = isoToEthText(data.to);
+    const rangeText = `ከ ${ethFrom} እስከ ${ethTo} ዓ.ም`;
+    const COLS = 9;
+    const MONEY = '#,##0.00', INT = '#,##0';
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = FLEET_REPORT_ORG_NAME;
+    const ws = wb.addWorksheet('ፋይናንስ ሪፖርት', {
+        pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+            margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },
+        views: [{ showGridLines: false }]
+    });
+    ws.columns = [{ width: 7 }, { width: 28 }, { width: 22 }, { width: 20 }, { width: 18 }, { width: 26 }, { width: 18 }, { width: 18 }, { width: 20 }];
+    const kit = makeFleetXlKit(ws, COLS);
+
+    // letterhead
+    kit.band(1, FLEET_REPORT_ORG_NAME, { from: 2, size: 20, color: kit.NAVY, height: 32 });
+    kit.band(2, FLEET_REPORT_ORG_SUB, { from: 2, size: 13, color: 'FF595959', height: 22 });
+    kit.band(3, 'የፍሊት ፋይናንስ ሪፖርት (በብር)', { size: 15, color: 'FFFFFFFF', bg: kit.NAVY, height: 28 });
+    kit.band(4, rangeText, { size: 12, bg: kit.LIGHT, border: true, height: 22 });
+    ws.getRow(5).height = 8;
+    if (logo) {
+        const imgId = wb.addImage({ buffer: logo.buffer, extension: logo.extension });
+        ws.addImage(imgId, { tl: { col: 0.12, row: 0.1 }, ext: { width: 62, height: 62 } });
+    }
+
+    let r = 6;
+    const section = title => { kit.band(r, title, { size: 12, bg: kit.LIGHT, align: 'left', border: true, height: 22 }); r += 1; };
+
+    // 1) summary
+    section('ማጠቃለያ');
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'የወጪ አይነት', 'መጠን (ብር)'], [
+        [1, 'የነዳጅ ግዢ (በደረሰኝ)', m.fuelCost],
+        [2, 'የጥገና ወጪ', m.maintCost]
+    ], [{}, { align: 'left' }, { fmt: MONEY, align: 'right' }], { labelCol: 2, label: 'ጠቅላላ ወጪ', cols: [3] });
+    r -= 1;
+    kit.band(r, `ማስታወሻ፦ ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
+        { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
+    r += 2;
+
+    // 2) by vehicle
+    section('በተሽከርካሪ');
+    r = writeFleetXlTable(ws, kit, r,
+        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
+        m.vehicles.map((v, i) => [i + 1, v.label, v.trips, v.km, v.est, v.liters, v.fuelCost, v.maintCost, v.total]),
+        [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }],
+        { labelCol: 2, label: 'ድምር', cols: [3, 4, 5, 6, 7, 8, 9] },
+        { 9: (row, arr) => ({ formula: `G${row}+H${row}`, result: Math.round(((arr[6] || 0) + (arr[7] || 0)) * 100) / 100 }) });
+
+    // 3) by department (from trips)
+    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ግምታዊ ነዳጅ)');
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)'],
+        m.depts.map((x, i) => [i + 1, x.name, x.trips, x.km, x.est]),
+        [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }],
+        { labelCol: 2, label: 'ድምር', cols: [3, 4, 5] });
+
+    // 4) fuel purchases (detail)
+    section('የነዳጅ ግዢ ዝርዝር (በደረሰኝ)');
+    const fuelSorted = data.fuel.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ቀን', 'ተሽከርካሪ', 'ማደያ', 'ሊትር', 'ዋጋ (ብር)', 'የኪ.ሜ ንባብ'],
+        fuelSorted.map((f, i) => [i + 1, isoToEthText(f.date), `${f.vehiclePlate || ''} (${fleetVehicleLabel(f)})`, f.station || '-', f.liters || 0, f.cost || 0, f.odometerKm || 0]),
+        [{}, {}, { align: 'left' }, { align: 'left' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: INT }],
+        { labelCol: 2, label: 'ድምር', cols: [5, 6] });
+
+    // 5) maintenance (detail)
+    section('የጥገና ዝርዝር');
+    const typeLabels = { routine: 'መደበኛ', repair: 'ጥገና' };
+    const maintSorted = data.maint.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ቀን', 'ተሽከርካሪ', 'ዓይነት', 'ጋራዥ/አቅራቢ', 'መግለጫ', 'ወጪ (ብር)', 'ሁኔታ'],
+        maintSorted.map((x, i) => [i + 1, isoToEthText(x.date), `${x.vehiclePlate || ''} (${fleetVehicleLabel(x)})`, typeLabels[x.maintenanceType] || x.maintenanceType || '', x.garage || '-', x.description || '-', x.cost || 0, fleetMaintStatusText(x)]),
+        [{}, {}, { align: 'left' }, {}, { align: 'left' }, { align: 'left' }, { fmt: MONEY, align: 'right' }, {}],
+        { labelCol: 2, label: 'ድምር', cols: [7] });
+
+    kit.band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
+    return wb;
+}
+
+async function downloadFleetFinanceExcel() {
+    if (!fleetFinanceData) { alert('መጀመሪያ "ሪፖርት አውጣ" ይጫኑ'); return; }
+    if (typeof ExcelJS === 'undefined') { alert('Excel ላይብረሪ አልተጫነም፤ ኢንተርኔትዎን አረጋግጠው ገጹን ያድሱና እንደገና ይሞክሩ'); return; }
+    const btn = document.getElementById('ffin-download-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const logo = await loadFleetReportLogo();
+        const wb = buildFleetFinanceWorkbook(fleetFinanceData, logo);
+        const buf = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `fleet_finance_${isoToEthText(fleetFinanceData.from).replace(/\//g, '-')}_to_${isoToEthText(fleetFinanceData.to).replace(/\//g, '-')}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    } catch (err) {
+        console.error('Fleet finance export error:', err);
+        alert('Excel ፋይሉን ማዘጋጀት አልተቻለም');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}

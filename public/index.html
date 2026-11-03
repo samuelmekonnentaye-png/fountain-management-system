@@ -215,6 +215,7 @@
                 <li id="menu-fleet-maintenance" class="sidebar-item" onclick="showSection('fleet-maintenance-sec', 'menu-fleet-maintenance')"><i class="fas fa-tools"></i> ጥገና ምዝገባ</li>
                 <li id="menu-fleet-fuel" class="sidebar-item" onclick="showSection('fleet-fuel-sec', 'menu-fleet-fuel')"><i class="fas fa-gas-pump"></i> ነዳጅ ምዝገባ</li>
                 <li id="menu-fleet-report" class="sidebar-item" onclick="showSection('fleet-report-sec', 'menu-fleet-report')"><i class="fas fa-file-excel"></i> ሳምንታዊ ሪፖርት</li>
+                <li id="menu-fleet-finance" class="sidebar-item" onclick="showSection('fleet-finance-sec', 'menu-fleet-finance')"><i class="fas fa-coins"></i> የፍሊት ፋይናንስ ሪፖርት</li>
             </ul>
 
             <div style="margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
@@ -709,6 +710,7 @@
                         </div>
                         <button type="button" class="btn-submit" style="flex:0 0 auto;" onclick="saveFuelPrices()"><i class="fas fa-save"></i> አስቀምጥ</button>
                     </div>
+                    <p id="fuel-price-meta" style="font-size:12px; color:#a0aec0; margin-top:4px;"></p>
                 </section>
 
                 <section class="form-section no-print">
@@ -780,7 +782,7 @@
             <!-- FLEET SECTION 3: MAINTENANCE (with approval workflow) -->
             <div id="fleet-maintenance-sec" class="page-section" style="display:none;">
                 <section class="form-section no-print">
-                    <h3><i class="fas fa-tools"></i> አዲስ ጥገና/አገልግሎት መዝግብ</h3>
+                    <h3 id="maint-form-title"><i class="fas fa-tools"></i> አዲስ ጥገና/አገልግሎት መዝግብ</h3>
                     <form id="maintenance-form" onsubmit="handleMaintenanceSubmit(event)">
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 200px;">
@@ -833,7 +835,8 @@
                             <label><i class="fas fa-receipt"></i> ደረሰኝ (አማራጭ)፡</label>
                             <input type="file" id="maint-receipt" accept="image/*,application/pdf" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px dashed rgba(255,255,255,0.3);">
                         </div>
-                        <button type="submit" class="btn-submit"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="submit" class="btn-submit" id="maint-submit-btn"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="button" class="btn-submit" id="maint-cancel-btn" style="background:#4a5568; display:none;" onclick="cancelMaintenanceEdit()">ተወው</button>
                     </form>
                 </section>
 
@@ -861,13 +864,29 @@
 
             <!-- FLEET SECTION 4: FUEL LOG (actual receipts) -->
             <div id="fleet-fuel-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print" id="fleet-fuel-price-box-2" style="display:none;">
+                    <h3><i class="fas fa-gas-pump"></i> የነዳጅ ዋጋ (የአሁኑ)</h3>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items:flex-end;" class="form-group">
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>ናፍጣ (ብር/ሊትር)፡</label>
+                            <input type="text" inputmode="decimal" id="fuel2-price-diesel" oninput="formatAmountInput(this)">
+                        </div>
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>ቤንዚን (ብር/ሊትር)፡</label>
+                            <input type="text" inputmode="decimal" id="fuel2-price-benzine" oninput="formatAmountInput(this)">
+                        </div>
+                        <button type="button" class="btn-submit" style="flex:0 0 auto;" onclick="saveFuelPrices('2')"><i class="fas fa-save"></i> አስቀምጥ</button>
+                    </div>
+                    <p id="fuel2-price-meta" style="font-size:12px; color:#a0aec0; margin-top:4px;"></p>
+                </section>
+
                 <section class="form-section no-print">
                     <h3><i class="fas fa-gas-pump"></i> አዲስ የነዳጅ ግዢ መዝግብ</h3>
                     <form id="fuel-form" onsubmit="handleFuelLogSubmit(event)">
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 200px;">
                                 <label>ተሽከርካሪ፡</label>
-                                <select id="fuel-vehicle" required>
+                                <select id="fuel-vehicle" required onchange="autoFillFuelCost()">
                                     <option value="">-- ይምረጡ --</option>
                                 </select>
                             </div>
@@ -883,11 +902,11 @@
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 160px;">
                                 <label>ሊትር፡</label>
-                                <input type="text" inputmode="decimal" id="fuel-liters" oninput="formatAmountInput(this)" required>
+                                <input type="text" inputmode="decimal" id="fuel-liters" oninput="formatAmountInput(this); autoFillFuelCost()" required>
                             </div>
                             <div style="flex: 1; min-width: 160px;">
-                                <label>ጠቅላላ ዋጋ (ብር)፡</label>
-                                <input type="text" inputmode="numeric" id="fuel-cost" oninput="formatAmountInput(this)" required>
+                                <label>ጠቅላላ ዋጋ (ብር)፡ <small style="color:#a0aec0;">(ሊትር × የአሁኑ ዋጋ በራስ ይሞላል፤ ማስተካከል ይቻላል)</small></label>
+                                <input type="text" inputmode="numeric" id="fuel-cost" oninput="formatAmountInput(this); this.dataset.manual = '1'" required>
                             </div>
                             <div style="flex: 1; min-width: 160px;">
                                 <label>የኪሎሜትር ንባብ፡</label>
@@ -980,6 +999,63 @@
                                 </tr>
                             </thead>
                             <tbody id="freport-vehicle-list"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION 6: FINANCE REPORT (birr) -->
+            <div id="fleet-finance-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print">
+                    <h3><i class="fas fa-coins"></i> የፍሊት ፋይናንስ ሪፖርት (በብር)</h3>
+                    <p style="font-size:13px; color:#a0aec0; margin-bottom:14px;">የተመረጠው ጊዜ የነዳጅ ግዢ (በደረሰኝ)፣ የጥገና ወጪ እና ከጉዞ ምዝገባ የሚሰላ ግምታዊ የነዳጅ ወጪ በብር ተሰብስቦ ይቀርባል። (Admin ወይም «ሌሎች የመዘገቡትን ማየት» ፈቃድ ያለው ሰው ሁሉንም ምዝገባ ያያል፤ ሌሎች የራሳቸውን ምዝገባ ብቻ።)</p>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items:flex-end;" class="form-group">
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>ከቀን፡</label>
+                            <input type="date" id="ffin-from" onchange="updateFleetFinanceEthLabel()">
+                        </div>
+                        <div style="flex: 1; min-width: 180px;">
+                            <label>እስከ ቀን፡</label>
+                            <input type="date" id="ffin-to" onchange="updateFleetFinanceEthLabel()">
+                        </div>
+                    </div>
+                    <p id="ffin-eth-label" style="font-size:14px; color:#a0aec0; margin:-4px 0 12px;"></p>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="setFleetFinancePreset(7)">ያለፉት 7 ቀን</button>
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="setFleetFinancePreset(30)">ያለፉት 30 ቀን</button>
+                        <button type="button" class="btn-submit" style="background:#4a5568;" onclick="setFleetFinancePreset(90)">ያለፉት 3 ወር</button>
+                        <button type="button" class="btn-submit" onclick="generateFleetFinance()"><i class="fas fa-chart-bar"></i> ሪፖርት አውጣ</button>
+                        <button type="button" id="ffin-download-btn" class="btn-submit" style="background:#2f855a;" onclick="downloadFleetFinanceExcel()" disabled><i class="fas fa-download"></i> Excel አውርድ</button>
+                    </div>
+                </section>
+
+                <section class="table-section" id="ffin-result" style="display:none;">
+                    <h3 id="ffin-title" style="margin-bottom: 15px;"></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead><tr><th>ተ.ቁ</th><th>የወጪ አይነት</th><th>መጠን (ብር)</th></tr></thead>
+                            <tbody id="ffin-summary-list"></tbody>
+                        </table>
+                    </div>
+
+                    <h3 style="margin: 25px 0 15px;"><i class="fas fa-truck-pickup"></i> በተሽከርካሪ</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ተ.ቁ</th><th>ተሽከርካሪ</th><th>የጉዞ ብዛት</th><th>የተጓዙት ኪ.ሜ</th><th>ግምታዊ ነዳጅ (ብር)</th>
+                                    <th>የገዙት ነዳጅ (ሊትር)</th><th>የነዳጅ ግዢ (ብር)</th><th>የጥገና (ብር)</th><th>ጠቅላላ ወጪ (ብር)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ffin-vehicle-list"></tbody>
+                        </table>
+                    </div>
+
+                    <h3 style="margin: 25px 0 15px;"><i class="fas fa-building"></i> በዲፓርትመንት (ከጉዞ ምዝገባ)</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead><tr><th>ተ.ቁ</th><th>ዲፓርትመንት</th><th>የጉዞ ብዛት</th><th>የተጓዙት ኪ.ሜ</th><th>ግምታዊ ነዳጅ (ብር)</th></tr></thead>
+                            <tbody id="ffin-dept-list"></tbody>
                         </table>
                     </div>
                 </section>
