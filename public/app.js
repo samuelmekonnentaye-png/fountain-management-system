@@ -344,6 +344,7 @@ function showSection(sectionId, menuId) {
     if (sectionId === 'fleet-fuel-sec') { fetchVehicles(); fetchFuelLogs(); loadFuelPriceSettings(); }
     if (sectionId === 'fleet-report-sec') initFleetReportSection();
     if (sectionId === 'fleet-finance-sec') initFleetFinanceSection();
+    if (sectionId === 'fleet-allowance-sec') initAllowanceSection();
     // Chart.js needs a visible (non-zero-size) canvas to size itself
     // correctly, so redraw the dashboard charts right after it becomes visible.
     if (sectionId === 'dashboard-sec') renderDashboardCharts();
@@ -1106,7 +1107,12 @@ async function promptAndSign(recordId, slot, kind = 'record') {
 
     let approverGroup = document.getElementById('sign-approver-group');
     let approverSelect = document.getElementById('sign-approver-select');
-    if (slot === 'prepared') {
+    const approverLabel = document.getElementById('sign-approver-label');
+    if (approverLabel) {
+        const nextSlotName = kind === 'allowance' ? ALLOWANCE_SLOT_NAMES[ALLOWANCE_SLOTS[ALLOWANCE_SLOTS.indexOf(slot) + 1]] : '';
+        approverLabel.textContent = nextSlotName ? `ቀጣይ የሚፈርመው (${nextSlotName}) ማን ይሁን፡` : 'ለማጽደቅ ለማን ይላክ፡';
+    }
+    if (signNeedsNext(kind, slot)) {
         approverGroup.style.display = 'block';
         approverSelect.required = true;
         approverSelect.innerHTML = '<option value="">-- በመጫን ላይ... --</option>';
@@ -1146,7 +1152,7 @@ async function submitSignPassword(e) {
     if (errorBox) { errorBox.style.display = 'none'; errorBox.innerHTML = ''; }
 
     let body = { slot, signaturePassword };
-    if (slot === 'prepared') {
+    if (signNeedsNext(kind, slot)) {
         let sendToApproverId = document.getElementById('sign-approver-select').value;
         if (!sendToApproverId) {
             if (errorBox) {
@@ -1160,7 +1166,8 @@ async function submitSignPassword(e) {
 
     if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> በማስኬድ ላይ...'; }
     try {
-        let endpoint = kind === 'maintenance' ? `/api/fleet/maintenance/${recordId}/sign` : `/api/records/${recordId}/sign`;
+        let endpoint = kind === 'allowance' ? `/api/fleet/allowance/${recordId}/sign`
+            : (kind === 'maintenance' ? `/api/fleet/maintenance/${recordId}/sign` : `/api/records/${recordId}/sign`);
         let res = await authFetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1169,7 +1176,13 @@ async function submitSignPassword(e) {
         let data = await res.json();
         if (res.ok) {
             closeSignPasswordModal();
-            if (kind === 'maintenance') {
+            if (kind === 'allowance') {
+                let idx = fleetAllowances.findIndex(r => r._id === recordId);
+                if (idx !== -1) fleetAllowances[idx] = data;
+                renderAllowanceList();
+                invalidateFleetReports();
+                fetchApprovalNotifications();
+            } else if (kind === 'maintenance') {
                 let idx = fleetMaintenance.findIndex(r => r._id === recordId);
                 if (idx !== -1) fleetMaintenance[idx] = data;
                 renderMaintenanceList();
@@ -1442,7 +1455,10 @@ function handleApprovalNotificationClick(notifId, recordId, module) {
     markApprovalNotificationRead(notifId);
     let notifDropdown = document.getElementById('notif-dropdown');
     if (notifDropdown) notifDropdown.classList.remove('show');
-    if (module === 'fleet_maintenance') {
+    if (module === 'fleet_allowance') {
+        showSection('fleet-allowance-sec', 'menu-fleet-allowance');
+        fetchAllowances();
+    } else if (module === 'fleet_maintenance') {
         showSection('fleet-maintenance-sec', 'menu-fleet-maintenance');
         fetchMaintenanceList();
     } else {
@@ -2164,15 +2180,54 @@ function renderTripList() {
     }
     tbody.innerHTML = fleetTrips.map(t => `
         <tr>
-            <td>${t.tripDate}</td>
+            <td>${fleetDateCell(t.tripDate)}</td>
             <td>${fleetEsc(t.department)}</td>
             <td>${fleetEsc(t.destination || '*')}</td>
             <td>${fleetEsc(t.vehiclePlate)} (${fleetEsc(t.vehicleType)})</td>
             <td>${(t.departureKm||0).toLocaleString('en-US')} - ${(t.returnKm||0).toLocaleString('en-US')}</td>
             <td>${(t.distanceKm||0).toLocaleString('en-US')}</td>
             <td>${(t.estimatedFuelCost||0).toLocaleString('en-US')} ብር</td>
-            <td class="no-print">${canDeleteEntry(t) ? `<button onclick="deleteTripLog('${t._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
+            <td class="no-print" style="white-space:nowrap;">${canDeleteEntry(t) ? `<button onclick="startTripEdit('${t._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px; margin-right:4px;" title="አስተካክል"><i class="fas fa-edit"></i></button><button onclick="deleteTripLog('${t._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
         </tr>`).join('');
+}
+
+let tripEditId = null;
+
+function setTripFormMode(editing) {
+    const title = document.getElementById('trip-form-title');
+    const submit = document.getElementById('trip-submit-btn');
+    const cancel = document.getElementById('trip-cancel-btn');
+    if (title) title.innerHTML = editing ? '<i class="fas fa-edit"></i> የአጠቃቀም ምዝገባ አስተካክል' : '<i class="fas fa-plus-circle"></i> የተሽከርካሪ አጠቃቀም መዝግብ';
+    if (submit) submit.innerHTML = editing ? '<i class="fas fa-save"></i> ለውጡን አስቀምጥ' : '<i class="fas fa-save"></i> መዝግብ';
+    if (cancel) cancel.style.display = editing ? 'inline-block' : 'none';
+}
+
+function selectOrAddOption(selectEl, value, label) {
+    if (!Array.from(selectEl.options).some(o => o.value === value)) selectEl.add(new Option(label, value));
+    selectEl.value = value;
+}
+
+function startTripEdit(id) {
+    const t = fleetTrips.find(x => x._id === id);
+    if (!t) return;
+    tripEditId = id;
+    selectOrAddOption(document.getElementById('trip-department'), t.department, t.department);
+    selectOrAddOption(document.getElementById('trip-vehicle'), t.vehicleId, `${t.vehiclePlate} (${t.vehicleType})`);
+    document.getElementById('trip-destination').value = (t.destination === '*') ? '' : (t.destination || '');
+    document.getElementById('trip-date').value = t.tripDate || '';
+    document.getElementById('trip-departure-time').value = t.departureTime || '';
+    setAmountValue('trip-departure-km', t.departureKm);
+    setAmountValue('trip-return-km', t.returnKm);
+    updateTripEstimate();
+    setTripFormMode(true);
+    document.getElementById('trip-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function cancelTripEdit() {
+    tripEditId = null;
+    document.getElementById('trip-form').reset();
+    document.getElementById('trip-estimate-preview').textContent = '';
+    setTripFormMode(false);
 }
 
 async function handleTripSubmit(e) {
@@ -2186,27 +2241,36 @@ async function handleTripSubmit(e) {
         departureKm: getAmountValue('trip-departure-km'),
         returnKm: getAmountValue('trip-return-km')
     };
+    const editing = tripEditId;
     try {
-        const res = await authFetch('/api/fleet/trips', {
-            method: 'POST',
+        const res = await authFetch(editing ? `/api/fleet/trips/${editing}` : '/api/fleet/trips', {
+            method: editing ? 'PUT' : 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
-        document.getElementById('trip-form').reset();
-        document.getElementById('trip-estimate-preview').textContent = '';
+        cancelTripEdit();
+        invalidateFleetReports();
         fetchTripLogs();
         fetchVehicles(); // odometer on the vehicle may have advanced
     } catch (err) {
-        alert('መመዝገብ አልተቻለም');
+        alert(editing ? 'ማስተካከል አልተቻለም' : 'መመዝገብ አልተቻለም');
     }
 }
 
 async function deleteTripLog(id) {
     if (!confirm('ይህን ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
     try {
-        await authFetch(`/api/fleet/trips/${id}`, { method: 'DELETE' });
+        const res = await authFetch(`/api/fleet/trips/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            let d = {};
+            try { d = await res.json(); } catch (parseErr) {}
+            alert(d.error || 'ማጥፋት አልተቻለም');
+            return;
+        }
+        if (tripEditId === id) cancelTripEdit();
+        invalidateFleetReports();
         fetchTripLogs();
     } catch (err) {
         alert('ማጥፋት አልተቻለም');
@@ -2281,7 +2345,7 @@ function renderMaintenanceList() {
     const typeLabels = { routine: 'መደበኛ', repair: 'ጥገና' };
     tbody.innerHTML = fleetMaintenance.map(item => `
         <tr>
-            <td>${item.date}</td>
+            <td>${fleetDateCell(item.date)}</td>
             <td>${fleetEsc(item.vehiclePlate)} (${fleetEsc(item.vehicleType)})</td>
             <td>${typeLabels[item.maintenanceType] || item.maintenanceType}</td>
             <td>${fleetEsc(item.description || '-')}</td>
@@ -2355,6 +2419,7 @@ async function handleMaintenanceSubmit(e) {
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
         cancelMaintenanceEdit();
+        invalidateFleetReports();
         fetchMaintenanceList();
     } catch (err) {
         alert(editing ? 'ማስተካከል አልተቻለም' : 'መመዝገብ አልተቻለም');
@@ -2374,6 +2439,7 @@ async function deleteMaintenance(id) {
             return;
         }
         if (maintEditId === id) cancelMaintenanceEdit();
+        invalidateFleetReports();
         fetchMaintenanceList();
     } catch (err) {
         alert('ማጥፋት አልተቻለም');
@@ -2402,14 +2468,48 @@ function renderFuelLogList() {
     }
     tbody.innerHTML = fleetFuelLogs.map(f => `
         <tr>
-            <td>${f.date}</td>
+            <td>${fleetDateCell(f.date)}</td>
             <td>${fleetEsc(f.vehiclePlate)} (${fleetEsc(f.vehicleType)})</td>
             <td>${fleetEsc(f.station || '-')}</td>
             <td>${(f.liters||0).toLocaleString('en-US')}</td>
             <td>${(f.cost||0).toLocaleString('en-US')} ብር</td>
             <td>${(f.odometerKm||0).toLocaleString('en-US')}</td>
-            <td class="no-print">${canDeleteEntry(f) ? `<button onclick="deleteFuelLog('${f._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
+            <td class="no-print" style="white-space:nowrap;">${canDeleteEntry(f) ? `<button onclick="startFuelEdit('${f._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px; margin-right:4px;" title="አስተካክል"><i class="fas fa-edit"></i></button><button onclick="deleteFuelLog('${f._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}</td>
         </tr>`).join('');
+}
+
+let fuelEditId = null;
+
+function setFuelFormMode(editing) {
+    const title = document.getElementById('fuel-form-title');
+    const submit = document.getElementById('fuel-submit-btn');
+    const cancel = document.getElementById('fuel-cancel-btn');
+    if (title) title.innerHTML = editing ? '<i class="fas fa-edit"></i> የነዳጅ ግዢ አስተካክል' : '<i class="fas fa-gas-pump"></i> አዲስ የነዳጅ ግዢ መዝግብ';
+    if (submit) submit.innerHTML = editing ? '<i class="fas fa-save"></i> ለውጡን አስቀምጥ' : '<i class="fas fa-save"></i> መዝግብ';
+    if (cancel) cancel.style.display = editing ? 'inline-block' : 'none';
+}
+
+function startFuelEdit(id) {
+    const f = fleetFuelLogs.find(x => x._id === id);
+    if (!f) return;
+    fuelEditId = id;
+    selectOrAddOption(document.getElementById('fuel-vehicle'), f.vehicleId, `${f.vehiclePlate} (${f.vehicleType})`);
+    document.getElementById('fuel-date').value = f.date || '';
+    document.getElementById('fuel-station').value = f.station || '';
+    setAmountValue('fuel-liters', f.liters || '');
+    setAmountValue('fuel-cost', f.cost || 0);
+    document.getElementById('fuel-cost').dataset.manual = '1';   // keep the saved price, don't re-fill it
+    setAmountValue('fuel-odometer', f.odometerKm || '');
+    document.getElementById('fuel-receipt').value = '';
+    setFuelFormMode(true);
+    document.getElementById('fuel-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function cancelFuelEdit() {
+    fuelEditId = null;
+    document.getElementById('fuel-form').reset();
+    delete document.getElementById('fuel-cost').dataset.manual;
+    setFuelFormMode(false);
 }
 
 async function handleFuelLogSubmit(e) {
@@ -2424,22 +2524,31 @@ async function handleFuelLogSubmit(e) {
     const receiptFile = document.getElementById('fuel-receipt').files[0];
     if (receiptFile) fd.append('receipt', receiptFile);
 
+    const editing = fuelEditId;
     try {
-        const res = await authFetch('/api/fleet/fuel-logs', { method: 'POST', body: fd });
+        const res = await authFetch(editing ? `/api/fleet/fuel-logs/${editing}` : '/api/fleet/fuel-logs', { method: editing ? 'PUT' : 'POST', body: fd });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
-        document.getElementById('fuel-form').reset();
-        delete document.getElementById('fuel-cost').dataset.manual;
+        cancelFuelEdit();
+        invalidateFleetReports();
         fetchFuelLogs();
     } catch (err) {
-        alert('መመዝገብ አልተቻለም');
+        alert(editing ? 'ማስተካከል አልተቻለም' : 'መመዝገብ አልተቻለም');
     }
 }
 
 async function deleteFuelLog(id) {
     if (!confirm('ይህን ምዝገባ መሰረዝ ይፈልጋሉ?')) return;
     try {
-        await authFetch(`/api/fleet/fuel-logs/${id}`, { method: 'DELETE' });
+        const res = await authFetch(`/api/fleet/fuel-logs/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            let d = {};
+            try { d = await res.json(); } catch (parseErr) {}
+            alert(d.error || 'ማጥፋት አልተቻለም');
+            return;
+        }
+        if (fuelEditId === id) cancelFuelEdit();
+        invalidateFleetReports();
         fetchFuelLogs();
     } catch (err) {
         alert('ማጥፋት አልተቻለም');
@@ -2879,6 +2988,7 @@ const ACCESS_MODULES = [
     { key: 'fleet_maintenance', label: 'ጥገና ምዝገባ', menu: 'menu-fleet-maintenance', section: 'fleet-maintenance-sec', group: 'fleet' },
     { key: 'fleet_fuel', label: 'ነዳጅ ምዝገባ', menu: 'menu-fleet-fuel', section: 'fleet-fuel-sec', group: 'fleet' },
     { key: 'fleet_report', label: 'ሳምንታዊ ሪፖርት (ፍሊት)', menu: 'menu-fleet-report', section: 'fleet-report-sec', group: 'fleet' },
+    { key: 'fleet_allowance', label: 'አበል (የመስክ ስራ የውሎ አበል ጥያቄ)', menu: 'menu-fleet-allowance', section: 'fleet-allowance-sec', group: 'fleet' },
     { key: 'fleet_finance', label: 'የፍሊት ፋይናንስ ሪፖርት (በብር)', menu: 'menu-fleet-finance', section: 'fleet-finance-sec', group: 'fleet' },
     // No menu of its own: lets someone (e.g. the fleet officer) see fleet entries made by OTHER people.
     { key: 'fleet_view_all', label: 'ሌሎች የመዘገቡትን የፍሊት ምዝገባዎችም ማየት (ለፍሊት ኃላፊ/ለሪፖርት አዘጋጅ)', menu: null, section: null, group: 'fleet' }
@@ -3013,6 +3123,7 @@ async function saveAccessModal() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    initEthDatePickers();
     applyMyAccess();
     refreshMyAccess();
     if (currentUser && currentUser.role === 'Admin') renderAccessCheckboxes('reg-access-box', [], 'reg-access-cb');
@@ -3085,7 +3196,19 @@ function fleetFinanceModel(d) {
     const fuelCost = round2(d.fuel.reduce((s, f) => s + (f.cost || 0), 0));
     const maintCost = round2(d.maint.reduce((s, x) => s + (x.cost || 0), 0));
     const est = round2(d.trips.reduce((s, t) => s + (t.estimatedFuelCost || 0), 0));
-    return { vehicles, depts, fuelCost, maintCost, total: round2(fuelCost + maintCost), est };
+    // Allowance requests count only once fully approved, and only the allowance +
+    // transport parts (the fuel part of the request is covered by the fuel receipts).
+    const isApproved = x => !!(x.approver && x.approver.userId);
+    const alOf = x => (x.costAllowance || 0) + (x.costTransport || 0);
+    const approvedAl = (d.allowances || []).filter(isApproved);
+    const pendingAl = (d.allowances || []).filter(x => !isApproved(x));
+    const allowanceCost = round2(approvedAl.reduce((sum, x) => sum + alOf(x), 0));
+    const allowancePending = round2(pendingAl.reduce((sum, x) => sum + alOf(x), 0));
+    return {
+        vehicles, depts, fuelCost, maintCost, allowanceCost,
+        allowanceApprovedCount: approvedAl.length, allowancePendingCount: pendingAl.length, allowancePending,
+        total: round2(fuelCost + maintCost + allowanceCost), est
+    };
 }
 
 async function generateFleetFinance() {
@@ -3096,19 +3219,21 @@ async function generateFleetFinance() {
     if (daysBetweenISO(from, to) > 366) { alert('ከአንድ ዓመት በላይ መምረጥ አይቻልም'); return; }
     const q = `?from=${from}&to=${to}`;
     try {
-        const [trRes, fuRes, maRes] = await Promise.all([
+        const [trRes, fuRes, maRes, alRes] = await Promise.all([
             authFetch('/api/fleet/trips' + q),
             authFetch('/api/fleet/fuel-logs' + q),
-            authFetch('/api/fleet/maintenance' + q)
+            authFetch('/api/fleet/maintenance' + q),
+            authFetch('/api/fleet/allowance' + q)
         ]);
-        const [tr, fu, ma] = await Promise.all([trRes.json(), fuRes.json(), maRes.json()]);
-        const failed = [[trRes, tr], [fuRes, fu], [maRes, ma]].find(p => !p[0].ok);
+        const [tr, fu, ma, al] = await Promise.all([trRes.json(), fuRes.json(), maRes.json(), alRes.json()]);
+        const failed = [[trRes, tr], [fuRes, fu], [maRes, ma], [alRes, al]].find(p => !p[0].ok);
         if (failed) { alert((failed[1] && failed[1].error) || 'ሪፖርቱን ማምጣት አልተቻለም'); return; }
         fleetFinanceData = {
             from, to,
             trips: Array.isArray(tr) ? tr : [],
             fuel: Array.isArray(fu) ? fu : [],
-            maint: Array.isArray(ma) ? ma : []
+            maint: Array.isArray(ma) ? ma : [],
+            allowances: Array.isArray(al) ? al : []
         };
         renderFleetFinancePreview();
         document.getElementById('ffin-download-btn').disabled = false;
@@ -3130,7 +3255,9 @@ function renderFleetFinancePreview() {
     document.getElementById('ffin-summary-list').innerHTML = `
         <tr><td>1</td><td>የነዳጅ ግዢ (በደረሰኝ፣ ${num(d.fuel.length)} ምዝገባ)</td><td>${money(m.fuelCost)}</td></tr>
         <tr><td>2</td><td>የጥገና ወጪ (${num(d.maint.length)} ምዝገባ)</td><td>${money(m.maintCost)}</td></tr>
+        <tr><td>3</td><td>አበል እና ትራንስፖርት (የጸደቀ፣ ${num(m.allowanceApprovedCount)} ጥያቄ)</td><td>${money(m.allowanceCost)}</td></tr>
         <tr style="font-weight:bold;"><td></td><td>ጠቅላላ ወጪ</td><td>${money(m.total)}</td></tr>
+        ${m.allowancePendingCount ? `<tr style="color:#d69e2e;"><td></td><td>ገና ያልጸደቁ የአበል ጥያቄዎች (${num(m.allowancePendingCount)}) — በጠቅላላው አልተካተቱም</td><td>${money(m.allowancePending)}</td></tr>` : ''}
         <tr style="color:#a0aec0;"><td></td><td>ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
     document.getElementById('ffin-vehicle-list').innerHTML = m.vehicles.length ? m.vehicles.map((v, i) => `
         <tr>
@@ -3257,12 +3384,19 @@ function buildFleetFinanceWorkbook(data, logo) {
     section('ማጠቃለያ');
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'የወጪ አይነት', 'መጠን (ብር)'], [
         [1, 'የነዳጅ ግዢ (በደረሰኝ)', m.fuelCost],
-        [2, 'የጥገና ወጪ', m.maintCost]
+        [2, 'የጥገና ወጪ', m.maintCost],
+        [3, 'አበል እና ትራንስፖርት (የጸደቀ)', m.allowanceCost]
     ], [{}, { align: 'left' }, { fmt: MONEY, align: 'right' }], { labelCol: 2, label: 'ጠቅላላ ወጪ', cols: [3] });
     r -= 1;
     kit.band(r, `ማስታወሻ፦ ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
         { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
-    r += 2;
+    r += 1;
+    if (m.allowancePendingCount > 0) {
+        kit.band(r, `ማስታወሻ፦ ገና ያልጸደቁ ${m.allowancePendingCount} የአበል ጥያቄዎች (${m.allowancePending.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር) በጠቅላላው ውስጥ አልተካተቱም`,
+            { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
+        r += 1;
+    }
+    r += 1;
 
     // 2) by vehicle
     section('በተሽከርካሪ');
@@ -3297,6 +3431,14 @@ function buildFleetFinanceWorkbook(data, logo) {
         [{}, {}, { align: 'left' }, {}, { align: 'left' }, { align: 'left' }, { fmt: MONEY, align: 'right' }, {}],
         { labelCol: 2, label: 'ድምር', cols: [7] });
 
+    // 6) allowance requests (detail)
+    section('የአበል ዝርዝር (ለአበል እና ለትራንስፖርት የጸደቁት ብቻ በጠቅላላው ይቆጠራሉ)');
+    const alSorted = (data.allowances || []).slice().sort((a, b) => String(a.fromDate).localeCompare(String(b.fromDate)));
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ሰራተኛ', 'የሄዱበት ቦታ', 'ጊዜ (ከ - እስከ)', 'ቀናት', 'ለአበል (ብር)', 'ለትራንስፖርት (ብር)', 'ሁኔታ'],
+        alSorted.map((x, i) => [i + 1, x.employeeName || '', x.destination || '', `${isoToEthText(x.fromDate)} - ${isoToEthText(x.toDate)}`, x.days || 1, x.costAllowance || 0, x.costTransport || 0, allowanceStatusPlain(x)]),
+        [{}, { align: 'left' }, { align: 'left' }, {}, { fmt: INT }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, {}],
+        { labelCol: 2, label: 'ድምር (ሁሉም ጥያቄ)', cols: [5, 6, 7] });
+
     kit.band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
     return wb;
 }
@@ -3324,4 +3466,474 @@ async function downloadFleetFinanceExcel() {
     } finally {
         if (btn) btn.disabled = false;
     }
+}
+
+
+// =====================================================================
+// ===== Ethiopian-calendar date picker =====
+// =====================================================================
+// Browsers can only show a Gregorian calendar in <input type="date">, so people
+// had to convert every date in their head (and a day is easy to lose when doing
+// that). Inside the fleet module each date box is replaced by three drop-downs
+// (day / month / year) in the Ethiopian calendar. The original <input> stays in
+// the page, hidden, and keeps holding the Gregorian date (YYYY-MM-DD), so all the
+// existing code, the database and the reports keep working unchanged.
+const ETH_MONTHS = ['መስከረም', 'ጥቅምት', 'ኅዳር', 'ታኅሣሥ', 'ጥር', 'የካቲት', 'መጋቢት', 'ሚያዝያ', 'ግንቦት', 'ሰኔ', 'ሐምሌ', 'ነሐሴ', 'ጳጉሜን'];
+
+function ethiopianToGregorian(ey, em, ed) {
+    const jdn = 1723856 + 365 + 365 * (ey - 1) + Math.floor(ey / 4) + 30 * em + ed - 31;
+    const f = jdn + 1401 + Math.floor(Math.floor((4 * jdn + 274277) / 146097) * 3 / 4) - 38;
+    const e = 4 * f + 3;
+    const g = Math.floor((e % 1461) / 4);
+    const h = 5 * g + 2;
+    const d = Math.floor((h % 153) / 5) + 1;
+    const m = ((Math.floor(h / 153) + 2) % 12) + 1;
+    const y = Math.floor(e / 1461) - 4716 + Math.floor((12 + 2 - m) / 12);
+    return { y, m, d };
+}
+function ethDaysInMonth(ey, em) {
+    return em < 13 ? 30 : (((ey + 1) % 4 === 0) ? 6 : 5);
+}
+function isoToEthParts(iso) {
+    const p = String(iso).split('-').map(Number);
+    return gregorianToEthiopian(p[0], p[1], p[2]);
+}
+function ethPartsToIso(ey, em, ed) {
+    const g = ethiopianToGregorian(ey, em, ed);
+    return `${g.y}-${String(g.m).padStart(2, '0')}-${String(g.d).padStart(2, '0')}`;
+}
+
+function enhanceEthDateInput(input) {
+    if (!input || input.dataset.ethEnhanced) return;
+    input.dataset.ethEnhanced = '1';
+    const wasRequired = input.required;
+    input.required = false;            // a hidden required field would silently block form submit
+    input.style.display = 'none';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'eth-date-picker';
+    wrap.style.cssText = 'display:flex; gap:6px; align-items:center;';
+    const dSel = document.createElement('select');
+    const mSel = document.createElement('select');
+    const ySel = document.createElement('select');
+    [dSel, mSel, ySel].forEach(sel => { sel.required = wasRequired; sel.style.flex = '1'; sel.style.minWidth = '0'; });
+    dSel.title = 'ቀን'; mSel.title = 'ወር'; ySel.title = 'ዓመተ ምህረት';
+    wrap.appendChild(dSel); wrap.appendChild(mSel); wrap.appendChild(ySel);
+    input.parentNode.insertBefore(wrap, input.nextSibling);
+
+    const nativeDesc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    const nativeGet = () => nativeDesc.get.call(input);
+    const nativeSet = v => nativeDesc.set.call(input, v);
+
+    const thisEthYear = isoToEthParts(dateToISO(new Date())).y;
+    function option(value, label) { const o = document.createElement('option'); o.value = value; o.textContent = label; return o; }
+    function fillYears(selected) {
+        ySel.innerHTML = '';
+        ySel.appendChild(option('', 'ዓ.ም'));
+        let from = thisEthYear - 8, to = thisEthYear + 2;
+        if (selected && selected < from) from = selected;
+        if (selected && selected > to) to = selected;
+        for (let y = to; y >= from; y--) ySel.appendChild(option(String(y), String(y)));
+    }
+    function fillMonths() {
+        mSel.innerHTML = '';
+        mSel.appendChild(option('', 'ወር'));
+        ETH_MONTHS.forEach((name, i) => mSel.appendChild(option(String(i + 1), name)));
+    }
+    function fillDays(count, selected) {
+        dSel.innerHTML = '';
+        dSel.appendChild(option('', 'ቀን'));
+        for (let d = 1; d <= count; d++) dSel.appendChild(option(String(d), String(d)));
+        if (selected && selected <= count) dSel.value = String(selected);
+    }
+    function syncFromInput() {
+        const v = nativeGet();
+        if (!v) {
+            fillYears(null);
+            fillDays(30, null);
+            mSel.value = ''; ySel.value = ''; dSel.value = '';
+            return;
+        }
+        const e = isoToEthParts(v);
+        fillYears(e.y);
+        mSel.value = String(e.m);
+        ySel.value = String(e.y);
+        fillDays(ethDaysInMonth(e.y, e.m), e.d);
+    }
+    function pushToInput() {
+        const y = Number(ySel.value), m = Number(mSel.value), d = Number(dSel.value);
+        nativeSet(y && m && d ? ethPartsToIso(y, m, d) : '');
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function adjustDays() {
+        const y = Number(ySel.value) || thisEthYear, m = Number(mSel.value) || 1;
+        fillDays(ethDaysInMonth(y, m), Number(dSel.value));
+    }
+    mSel.addEventListener('change', () => { adjustDays(); pushToInput(); });
+    ySel.addEventListener('change', () => { adjustDays(); pushToInput(); });
+    dSel.addEventListener('change', pushToInput);
+
+    // Code elsewhere sets `input.value = '2026-10-12'` (edit forms, report presets):
+    // keep the three drop-downs in step with it.
+    Object.defineProperty(input, 'value', {
+        configurable: true,
+        get() { return nativeGet(); },
+        set(v) { nativeSet(v); syncFromInput(); }
+    });
+    if (input.form) input.form.addEventListener('reset', () => setTimeout(syncFromInput, 0));
+
+    fillMonths();
+    syncFromInput();
+}
+
+function initEthDatePickers() {
+    const sections = ['fleet-vehicles-sec', 'fleet-trips-sec', 'fleet-maintenance-sec', 'fleet-fuel-sec', 'fleet-report-sec', 'fleet-finance-sec', 'fleet-allowance-sec'];
+    sections.forEach(id => {
+        const sec = document.getElementById(id);
+        if (sec) sec.querySelectorAll('input[type="date"]').forEach(enhanceEthDateInput);
+    });
+}
+
+// A date as the Ethiopian date, with the Gregorian one small beside it so a
+// person can always check what was stored.
+function fleetDateCell(iso) {
+    if (!iso) return '-';
+    return `${fleetEsc(isoToEthText(iso))} <small style="color:#a0aec0;">(${fleetEsc(iso)})</small>`;
+}
+
+// Any trip / fuel / maintenance change makes an already generated report out
+// of date; hide it so a stale one is never downloaded by mistake.
+function invalidateFleetReports() {
+    fleetReportData = null;
+    fleetFinanceData = null;
+    ['freport-result', 'ffin-result'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    ['freport-download-btn', 'ffin-download-btn'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
+}
+
+
+// =====================================================================
+// ===== Field-work allowance requests (የመስክ ስራ የውሎ አበል ጥያቄ) =====
+// =====================================================================
+// Same fields as the paper form. Four signatures in order (the person asking ->
+// immediate supervisor -> who authorizes -> who approves); each signer picks who
+// signs next. The wording below is what is printed on the form — edit it here.
+const ALLOWANCE_SLOTS = ['requester', 'supervisor', 'authorizer', 'approver'];
+const ALLOWANCE_SLOT_NAMES = { requester: 'ጠያቂ', supervisor: 'የቅርብ ኃላፊ', authorizer: 'የፈቀደው', approver: 'የጸደቀው' };
+const ALLOWANCE_FORM_TEXT = {
+    orgAm: 'ፋውንቴን ኢንተርናሽናል ትሬዲንግ ኃ/የተ/የግ/ማ',
+    orgEn: 'Fountain International Trading P.L.C',
+    docNumberLabel: 'ሰነድ ቁጥር', docNumber: '12',
+    issueLabel: 'Issue number', issueNumber: '01',
+    pageLabel: 'ገጽ ቁጥር', pageNumber: '01',
+    title: 'የመስክ ስራ የውሎ አበል ጥያቄ ማስፈቀጃና መፍቀጃ ቅጽ',
+    date: 'ቀን', purpose: 'የስራ ዓላማና አጭር መግለጫ',
+    period: 'የመስክ ስራው የሚፈጀው ጊዜ ከ', periodTo: 'እስከ',
+    destination: 'ለመስክ ስራው የሚሄዱበት ቦታ',
+    travel: 'ጉዞው የሚከናወነው', travelOffice: 'በመ/ቤት ተሽከርካሪ', travelPublic: 'በህዝብ ማመላለሻ', travelAir: 'በአውሮፕላን',
+    salary: 'የደመወዝ መጠን', daily: 'የቀን አበል',
+    costs: 'ለመስክ ስራ የሚያስፈልገው የወጪ ግምት', costFuel: 'ለነዳጅ ብር', costAllowance: 'ለአበል ብር', costTransport: 'ለትራንስፖርት', costTotal: 'ድምር',
+    remarks: 'አስተያየት (ካለ)', employee: 'የጠየቀው ሰራተኛ ስም',
+    sigRequester: 'ፊርማ', sigSupervisor: 'የቅርብ ኃላፊ ፊርማ', sigAuthorizer: 'የፈቀደው ፊርማ', sigApprover: 'የጸደቀው ፊርማ'
+};
+
+let fleetAllowances = [];
+let allowanceEditId = null;
+
+async function fetchAllowances() {
+    try {
+        const res = await authFetch('/api/fleet/allowance');
+        const data = await res.json();
+        if (!res.ok) return;
+        fleetAllowances = Array.isArray(data) ? data : [];
+        renderAllowanceList();
+    } catch (err) {
+        console.log('የአበል ጥያቄዎችን ማምጣት አልተቻለም');
+    }
+}
+
+function setAllowanceDefaults() {
+    const dateEl = document.getElementById('alw-date');
+    if (dateEl && !dateEl.value) dateEl.value = dateToISO(new Date());
+    const empEl = document.getElementById('alw-employee');
+    if (empEl && !empEl.value && currentUser) empEl.value = currentUser.fullName || currentUser.username || '';
+}
+function initAllowanceSection() {
+    fetchAllowances();
+    if (!allowanceEditId) setAllowanceDefaults();
+    updateAllowanceTotals();
+}
+
+// days = inclusive number of days; the allowance amount follows daily x days
+// until someone types it by hand; total = fuel + allowance + transport.
+function updateAllowanceTotals() {
+    const from = document.getElementById('alw-from').value;
+    const to = document.getElementById('alw-to').value;
+    const daysEl = document.getElementById('alw-days');
+    const days = (from && to && to >= from) ? daysBetweenISO(from, to) : 0;
+    if (daysEl) daysEl.value = days ? `${days} ቀን` : '';
+    const allowEl = document.getElementById('alw-cost-allowance');
+    if (allowEl && allowEl.dataset.manual !== '1') {
+        const daily = getAmountValue('alw-daily');
+        if (days && !isNaN(daily)) setAmountValue('alw-cost-allowance', Math.round(daily * days * 100) / 100);
+    }
+    const sum = ['alw-cost-fuel', 'alw-cost-allowance', 'alw-cost-transport'].reduce((s, id) => { const v = getAmountValue(id); return s + (isNaN(v) ? 0 : v); }, 0);
+    setAmountValue('alw-total', Math.round(sum * 100) / 100);
+}
+
+function allowanceStatusText(item) {
+    if (item.approver && item.approver.userId) return { text: 'ተጸድቋል', color: '#68d391' };
+    if (item.pending && item.pending.userId) return { text: `${fleetEsc(item.pending.name || '')} እየጠበቀ`, color: '#d69e2e' };
+    if (item.requester && item.requester.userId) return { text: 'ተፈርሟል', color: '#d69e2e' };
+    return { text: 'ያልተፈረመ', color: '#a0aec0' };
+}
+function canEditAllowance(item) {
+    if (!currentUser) return false;
+    if (currentUser.role === 'Admin') return true;
+    return item.userId === currentUser.id && !(item.approver && item.approver.userId);
+}
+
+function allowanceSignCellHtml(item, slot) {
+    const person = item[slot];
+    if (person && person.userId) {
+        return `<span style="font-size:12px; color:#68d391;"><i class="fas fa-check-circle"></i> ${fleetEsc(person.fullName)}</span>`;
+    }
+    const idx = ALLOWANCE_SLOTS.indexOf(slot);
+    const prev = idx === 0 ? true : !!(item[ALLOWANCE_SLOTS[idx - 1]] && item[ALLOWANCE_SLOTS[idx - 1]].userId);
+    if (!prev) return `<span style="color:#718096;">—</span>`;
+    const isAdmin = !!currentUser && currentUser.role === 'Admin';
+    const btn = extra => `<button class="btn-submit no-print" style="padding:5px 9px; font-size:11.5px;" onclick="promptAndSign('${item._id}', '${slot}', 'allowance')"><i class="fas fa-signature"></i> ፈርም${extra}</button>`;
+    const note = html => `<span class="no-print" style="font-size:11px; color:#d69e2e;">${html}</span>`;
+    if (slot === 'requester') {
+        return (isAdmin || (currentUser && item.userId === currentUser.id)) ? btn('') : note('ገና አልተፈረመም');
+    }
+    if (item.pending && item.pending.userId) {
+        const mine = !!currentUser && item.pending.userId === currentUser.id;
+        if (mine || isAdmin) return btn(mine ? '' : ' (Admin)');
+        return note(`<i class="fas fa-hourglass-half"></i> ${fleetEsc(item.pending.name || '')} እየጠበቀ`);
+    }
+    return note('ገና አልተላከም');
+}
+
+function renderAllowanceList() {
+    const tbody = document.getElementById('alw-data-list');
+    if (!tbody) return;
+    if (!fleetAllowances.length) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#a0aec0;">ምንም የአበል ጥያቄ የለም</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = fleetAllowances.map(a => {
+        const st = allowanceStatusText(a);
+        return `
+        <tr>
+            <td>${fleetDateCell(a.requestDate)}</td>
+            <td>${fleetEsc(a.employeeName)}</td>
+            <td>${fleetEsc(a.destination)}</td>
+            <td>${fleetEsc(isoToEthText(a.fromDate))} – ${fleetEsc(isoToEthText(a.toDate))}<br><small style="color:#a0aec0;">${a.days || 1} ቀን</small></td>
+            <td>${(a.total || 0).toLocaleString('en-US')} ብር</td>
+            <td>${allowanceSignCellHtml(a, 'requester')}</td>
+            <td>${allowanceSignCellHtml(a, 'supervisor')}</td>
+            <td>${allowanceSignCellHtml(a, 'authorizer')}</td>
+            <td>${allowanceSignCellHtml(a, 'approver')}<br><small style="color:${st.color};">${st.text}</small></td>
+            <td class="no-print" style="white-space:nowrap;">
+                <button onclick="printAllowanceForm('${a._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px; margin-right:4px;" title="ቅጹን አትም"><i class="fas fa-print"></i></button>${canEditAllowance(a) ? `<button onclick="startAllowanceEdit('${a._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px; margin-right:4px;" title="አስተካክል"><i class="fas fa-edit"></i></button><button onclick="deleteAllowance('${a._id}')" class="btn-logout" style="padding:4px 8px; font-size:12px;" title="ሰርዝ"><i class="fas fa-trash"></i></button>` : ''}
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function setAllowanceFormMode(editing) {
+    const title = document.getElementById('alw-form-title');
+    const submit = document.getElementById('alw-submit-btn');
+    const cancel = document.getElementById('alw-cancel-btn');
+    if (title) title.innerHTML = editing ? '<i class="fas fa-edit"></i> የአበል ጥያቄ አስተካክል' : '<i class="fas fa-hand-holding-usd"></i> የመስክ ስራ የውሎ አበል ጥያቄ';
+    if (submit) submit.innerHTML = editing ? '<i class="fas fa-save"></i> ለውጡን አስቀምጥ' : '<i class="fas fa-save"></i> መዝግብ';
+    if (cancel) cancel.style.display = editing ? 'inline-block' : 'none';
+}
+
+function startAllowanceEdit(id) {
+    const a = fleetAllowances.find(x => x._id === id);
+    if (!a) return;
+    if (allowanceAnySignedClient(a)) {
+        if (!confirm('ይህ ጥያቄ ፊርማ ተጀምሮበታል። ካስተካከሉት ፊርማዎቹ ሁሉ ይሰረዛሉ፤ ከመጀመሪያው እንደገና መፈረም ያስፈልጋል። ይቀጥሉ?')) return;
+    }
+    allowanceEditId = id;
+    document.getElementById('alw-date').value = a.requestDate || '';
+    document.getElementById('alw-employee').value = a.employeeName || '';
+    document.getElementById('alw-purpose').value = a.purpose || '';
+    document.getElementById('alw-from').value = a.fromDate || '';
+    document.getElementById('alw-to').value = a.toDate || '';
+    document.getElementById('alw-destination').value = a.destination || '';
+    document.getElementById('alw-travel-office').checked = (a.travelBy || []).includes('office_vehicle');
+    document.getElementById('alw-travel-public').checked = (a.travelBy || []).includes('public_transport');
+    document.getElementById('alw-travel-air').checked = (a.travelBy || []).includes('airplane');
+    setAmountValue('alw-salary', a.salary || '');
+    setAmountValue('alw-daily', a.dailyAllowance || '');
+    setAmountValue('alw-cost-fuel', a.costFuel || '');
+    document.getElementById('alw-cost-allowance').dataset.manual = '1';   // keep the saved amount
+    setAmountValue('alw-cost-allowance', a.costAllowance || 0);
+    setAmountValue('alw-cost-transport', a.costTransport || '');
+    document.getElementById('alw-remarks').value = a.remarks || '';
+    updateAllowanceTotals();
+    setAllowanceFormMode(true);
+    document.getElementById('allowance-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function allowanceAnySignedClient(a) {
+    return ALLOWANCE_SLOTS.some(sl => a[sl] && a[sl].userId) || !!(a.pending && a.pending.userId);
+}
+
+function cancelAllowanceEdit() {
+    allowanceEditId = null;
+    document.getElementById('allowance-form').reset();
+    delete document.getElementById('alw-cost-allowance').dataset.manual;
+    setAllowanceFormMode(false);
+    setAllowanceDefaults();
+    updateAllowanceTotals();
+}
+
+async function handleAllowanceSubmit(e) {
+    e.preventDefault();
+    const travelBy = [];
+    if (document.getElementById('alw-travel-office').checked) travelBy.push('office_vehicle');
+    if (document.getElementById('alw-travel-public').checked) travelBy.push('public_transport');
+    if (document.getElementById('alw-travel-air').checked) travelBy.push('airplane');
+    const payload = {
+        requestDate: document.getElementById('alw-date').value,
+        employeeName: document.getElementById('alw-employee').value.trim(),
+        purpose: document.getElementById('alw-purpose').value.trim(),
+        fromDate: document.getElementById('alw-from').value,
+        toDate: document.getElementById('alw-to').value,
+        destination: document.getElementById('alw-destination').value.trim(),
+        travelBy,
+        salary: getAmountValue('alw-salary') || 0,
+        dailyAllowance: getAmountValue('alw-daily') || 0,
+        costFuel: getAmountValue('alw-cost-fuel') || 0,
+        costAllowance: getAmountValue('alw-cost-allowance') || 0,
+        costTransport: getAmountValue('alw-cost-transport') || 0,
+        remarks: document.getElementById('alw-remarks').value.trim()
+    };
+    const editing = allowanceEditId;
+    try {
+        const res = await authFetch(editing ? `/api/fleet/allowance/${editing}` : '/api/fleet/allowance', {
+            method: editing ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        cancelAllowanceEdit();
+        invalidateFleetReports();
+        fetchAllowances();
+        fetchApprovalNotifications();
+    } catch (err) {
+        alert(editing ? 'ማስተካከል አልተቻለም' : 'መመዝገብ አልተቻለም');
+    }
+}
+
+async function deleteAllowance(id) {
+    const a = fleetAllowances.find(x => x._id === id);
+    if (!confirm(a && allowanceAnySignedClient(a) ? 'ይህ ጥያቄ ፊርማ ተጀምሮበታል። መሰረዝ ይፈልጋሉ?' : 'ይህን የአበል ጥያቄ መሰረዝ ይፈልጋሉ?')) return;
+    try {
+        const res = await authFetch(`/api/fleet/allowance/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            let d = {};
+            try { d = await res.json(); } catch (parseErr) {}
+            alert(d.error || 'ማጥፋት አልተቻለም');
+            return;
+        }
+        if (allowanceEditId === id) cancelAllowanceEdit();
+        invalidateFleetReports();
+        fetchAllowances();
+    } catch (err) {
+        alert('ማጥፋት አልተቻለም');
+    }
+}
+
+// Opens the official form (same layout as the paper one) ready to print / save as PDF.
+function printAllowanceForm(id) {
+    const a = fleetAllowances.find(x => x._id === id);
+    if (!a) return;
+    const T = ALLOWANCE_FORM_TEXT;
+    const win = window.open('', '_blank');
+    if (!win) { alert('ቅጹን ለመክፈት የአሳሹ pop-up መፍቀድ አለበት'); return; }
+    const money = n => (n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fill = (v, min) => `<span class="fill" style="min-width:${min || 120}px;">${(v === '' || v == null) ? '&nbsp;' : fleetEsc(v)}</span>`;
+    const box = on => `<span class="box">${on ? '&#10003;' : ''}</span>`;
+    const travel = a.travelBy || [];
+    const sigBlock = (slot, label) => {
+        const p = a[slot];
+        const img = p && p.signatureImage ? `<img src="${fleetEsc(p.signatureImage)}" alt="">` : '';
+        const who = p && p.userId ? `${fleetEsc(p.fullName)}${p.signedAt ? ` — ${fleetEsc(isoToEthText(dateToISO(new Date(p.signedAt))))} ዓ.ም` : ''}` : '';
+        return `<div class="sig"><div class="sig-label">${label}</div><div class="sig-box">${img}</div><div class="sig-name">${who || '&nbsp;'}</div></div>`;
+    };
+    const origin = window.location.origin;
+    win.document.write(`<!DOCTYPE html><html lang="am"><head><meta charset="utf-8"><title>${fleetEsc(T.title)}</title>
+<style>
+@page { size: A4; margin: 14mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Nyala','Noto Sans Ethiopic','Abyssinica SIL','Segoe UI',serif; font-size: 13pt; color:#000; margin:0; }
+table.hdr { width:100%; border-collapse:collapse; margin-bottom:18px; }
+table.hdr td { border:1px solid #000; padding:6px 10px; vertical-align:middle; }
+.logo { width:22%; text-align:center; } .logo img { max-width:100%; max-height:90px; }
+.org { font-weight:bold; line-height:1.4; } .title { font-weight:bold; }
+.small { font-size:11pt; }
+.date { text-align:right; margin-bottom:14px; }
+ol { padding-left:26px; margin:0; } ol li { margin-bottom:12px; line-height:1.7; }
+.fill { display:inline-block; border-bottom:1px dotted #000; padding:0 6px; }
+.fill.block { display:block; min-height:24px; margin-top:2px; }
+.box { display:inline-block; width:46px; height:20px; border:1px solid #000; vertical-align:middle; text-align:center; margin:0 14px 0 6px; line-height:18px; }
+.costs div { margin-left:160px; margin-top:4px; }
+.sigs { margin-top:22px; }
+.sig { display:flex; align-items:flex-end; gap:12px; margin-top:16px; }
+.sig-label { width:210px; font-weight:bold; text-align:right; }
+.sig-box { flex:0 0 190px; height:46px; border-bottom:1px dotted #000; text-align:center; } .sig-box img { max-height:42px; max-width:180px; }
+.sig-name { flex:1; font-size:11pt; }
+@media print { .noprint { display:none; } }
+</style></head><body>
+<table class="hdr">
+ <tr>
+  <td class="logo" rowspan="2"><img src="${origin}/images/logo.png" alt=""></td>
+  <td class="org" colspan="1">${fleetEsc(T.orgAm)}<br>${fleetEsc(T.orgEn)}</td>
+  <td colspan="2" class="small"><b>${fleetEsc(T.docNumberLabel)}፡ ${fleetEsc(T.docNumber)}</b><br>Document number</td>
+ </tr>
+ <tr>
+  <td class="title">${fleetEsc(T.title)}</td>
+  <td class="small">${fleetEsc(T.issueLabel)}: ${fleetEsc(T.issueNumber)}</td>
+  <td class="small">${fleetEsc(T.pageLabel)}: ${fleetEsc(T.pageNumber)}<br>Page number</td>
+ </tr>
+</table>
+<div class="date">${fleetEsc(T.date)}፡ ${fill(isoToEthText(a.requestDate) + ' ዓ.ም', 150)}</div>
+<ol>
+ <li>${fleetEsc(T.purpose)} <span class="fill block">${fleetEsc(a.purpose)}</span></li>
+ <li>${fleetEsc(T.period)} ${fill(isoToEthText(a.fromDate), 110)} ${fleetEsc(T.periodTo)} ${fill(isoToEthText(a.toDate), 110)} <small>(${a.days || 1} ቀን)</small></li>
+ <li>${fleetEsc(T.destination)} ${fill(a.destination, 260)}</li>
+ <li>${fleetEsc(T.travel)} ${fleetEsc(T.travelOffice)} ${box(travel.includes('office_vehicle'))} ${fleetEsc(T.travelPublic)} ${box(travel.includes('public_transport'))} ${fleetEsc(T.travelAir)} ${box(travel.includes('airplane'))}</li>
+ <li>${fleetEsc(T.salary)} ${fill(money(a.salary) + ' ብር', 200)}</li>
+ <li>${fleetEsc(T.daily)} ${fill(money(a.dailyAllowance) + ' ብር', 200)}</li>
+ <li class="costs">${fleetEsc(T.costs)} ${fleetEsc(T.costFuel)} ${fill(money(a.costFuel), 150)}
+   <div>${fleetEsc(T.costAllowance)} ${fill(money(a.costAllowance), 150)}</div>
+   <div>${fleetEsc(T.costTransport)} ${fill(money(a.costTransport), 150)}</div>
+   <div><b>${fleetEsc(T.costTotal)}</b> ${fill(money(a.total), 150)}</div></li>
+ <li>${fleetEsc(T.remarks)} <span class="fill block">${fleetEsc(a.remarks || '')}</span></li>
+ <li>${fleetEsc(T.employee)} ${fill(a.employeeName, 260)}</li>
+</ol>
+<div class="sigs">
+ ${sigBlock('requester', fleetEsc(T.sigRequester))}
+ ${sigBlock('supervisor', fleetEsc(T.sigSupervisor))}
+ ${sigBlock('authorizer', fleetEsc(T.sigAuthorizer))}
+ ${sigBlock('approver', fleetEsc(T.sigApprover))}
+</div>
+<p class="noprint" style="margin-top:24px; text-align:center;"><button onclick="window.print()" style="padding:8px 18px; font-size:14px;">አትም / PDF አስቀምጥ</button></p>
+<script>window.onload = function () { setTimeout(function () { window.print(); }, 400); };<\/script>
+</body></html>`);
+    win.document.close();
+}
+
+function signNeedsNext(kind, slot) {
+    return kind === 'allowance' ? slot !== 'approver' : slot === 'prepared';
+}
+function allowanceStatusPlain(item) {
+    if (item.approver && item.approver.userId) return 'ተጸድቋል';
+    if (item.pending && item.pending.userId) return 'ለመፈረም እየጠበቀ';
+    if (item.requester && item.requester.userId) return 'ተፈርሟል';
+    return 'ያልተፈረመ';
 }

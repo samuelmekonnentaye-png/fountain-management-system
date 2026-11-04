@@ -214,6 +214,7 @@
                 <li id="menu-fleet-trips" class="sidebar-item" onclick="showSection('fleet-trips-sec', 'menu-fleet-trips')"><i class="fas fa-road"></i> የአጠቃቀም ምዝገባ</li>
                 <li id="menu-fleet-maintenance" class="sidebar-item" onclick="showSection('fleet-maintenance-sec', 'menu-fleet-maintenance')"><i class="fas fa-tools"></i> ጥገና ምዝገባ</li>
                 <li id="menu-fleet-fuel" class="sidebar-item" onclick="showSection('fleet-fuel-sec', 'menu-fleet-fuel')"><i class="fas fa-gas-pump"></i> ነዳጅ ምዝገባ</li>
+                <li id="menu-fleet-allowance" class="sidebar-item" onclick="showSection('fleet-allowance-sec', 'menu-fleet-allowance')"><i class="fas fa-hand-holding-usd"></i> አበል</li>
                 <li id="menu-fleet-report" class="sidebar-item" onclick="showSection('fleet-report-sec', 'menu-fleet-report')"><i class="fas fa-file-excel"></i> ሳምንታዊ ሪፖርት</li>
                 <li id="menu-fleet-finance" class="sidebar-item" onclick="showSection('fleet-finance-sec', 'menu-fleet-finance')"><i class="fas fa-coins"></i> የፍሊት ፋይናንስ ሪፖርት</li>
             </ul>
@@ -714,7 +715,7 @@
                 </section>
 
                 <section class="form-section no-print">
-                    <h3><i class="fas fa-plus-circle"></i> የተሽከርካሪ አጠቃቀም መዝግብ</h3>
+                    <h3 id="trip-form-title"><i class="fas fa-plus-circle"></i> የተሽከርካሪ አጠቃቀም መዝግብ</h3>
                     <form id="trip-form" onsubmit="handleTripSubmit(event)">
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 200px;">
@@ -753,7 +754,8 @@
                             </div>
                         </div>
                         <p id="trip-estimate-preview" style="font-size:14px; color:#a0aec0; margin:-4px 0 14px;"></p>
-                        <button type="submit" class="btn-submit"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="submit" class="btn-submit" id="trip-submit-btn"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="button" class="btn-submit" id="trip-cancel-btn" style="background:#4a5568; display:none;" onclick="cancelTripEdit()">ተወው</button>
                     </form>
                 </section>
 
@@ -881,7 +883,7 @@
                 </section>
 
                 <section class="form-section no-print">
-                    <h3><i class="fas fa-gas-pump"></i> አዲስ የነዳጅ ግዢ መዝግብ</h3>
+                    <h3 id="fuel-form-title"><i class="fas fa-gas-pump"></i> አዲስ የነዳጅ ግዢ መዝግብ</h3>
                     <form id="fuel-form" onsubmit="handleFuelLogSubmit(event)">
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 200px;">
@@ -917,7 +919,8 @@
                             <label><i class="fas fa-receipt"></i> ደረሰኝ (አማራጭ)፡</label>
                             <input type="file" id="fuel-receipt" accept="image/*,application/pdf" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px dashed rgba(255,255,255,0.3);">
                         </div>
-                        <button type="submit" class="btn-submit"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="submit" class="btn-submit" id="fuel-submit-btn"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="button" class="btn-submit" id="fuel-cancel-btn" style="background:#4a5568; display:none;" onclick="cancelFuelEdit()">ተወው</button>
                     </form>
                 </section>
 
@@ -999,6 +1002,116 @@
                                 </tr>
                             </thead>
                             <tbody id="freport-vehicle-list"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- FLEET SECTION: ALLOWANCE (የመስክ ስራ የውሎ አበል ጥያቄ) -->
+            <div id="fleet-allowance-sec" class="page-section" style="display:none;">
+                <section class="form-section no-print">
+                    <h3 id="alw-form-title"><i class="fas fa-hand-holding-usd"></i> የመስክ ስራ የውሎ አበል ጥያቄ</h3>
+                    <form id="allowance-form" onsubmit="handleAllowanceSubmit(event)">
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>ቀን፡</label>
+                                <input type="date" id="alw-date" required>
+                            </div>
+                            <div style="flex: 2; min-width: 220px;">
+                                <label>9. የጠየቀው ሰራተኛ ስም፡</label>
+                                <input type="text" id="alw-employee" required>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>1. የስራ ዓላማና አጭር መግለጫ፡</label>
+                            <textarea id="alw-purpose" rows="2" required></textarea>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>2. የመስክ ስራው የሚፈጀው ጊዜ — ከ፡</label>
+                                <input type="date" id="alw-from" required onchange="updateAllowanceTotals()">
+                            </div>
+                            <div style="flex: 1; min-width: 220px;">
+                                <label>እስከ፡</label>
+                                <input type="date" id="alw-to" required onchange="updateAllowanceTotals()">
+                            </div>
+                            <div style="flex: 0 0 110px; min-width: 100px;">
+                                <label>ቀናት፡</label>
+                                <input type="text" id="alw-days" readonly>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>3. ለመስክ ስራው የሚሄዱበት ቦታ፡</label>
+                            <input type="text" id="alw-destination" required>
+                        </div>
+                        <div class="form-group">
+                            <label>4. ጉዞው የሚከናወነው፡</label>
+                            <div style="display:flex; gap:22px; flex-wrap:wrap;">
+                                <label style="display:flex; align-items:center; gap:8px; font-weight:normal;"><input type="checkbox" id="alw-travel-office" style="width:auto; margin:0;"> በመ/ቤት ተሽከርካሪ</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-weight:normal;"><input type="checkbox" id="alw-travel-public" style="width:auto; margin:0;"> በህዝብ ማመላለሻ</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-weight:normal;"><input type="checkbox" id="alw-travel-air" style="width:auto; margin:0;"> በአውሮፕላን</label>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>5. የደመወዝ መጠን (ብር)፡</label>
+                                <input type="text" inputmode="decimal" id="alw-salary" oninput="formatAmountInput(this)">
+                            </div>
+                            <div style="flex: 1; min-width: 200px;">
+                                <label>6. የቀን አበል (ብር)፡</label>
+                                <input type="text" inputmode="decimal" id="alw-daily" oninput="formatAmountInput(this); updateAllowanceTotals()">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>7. ለመስክ ስራ የሚያስፈልገው የወጪ ግምት (ብር)፡</label>
+                        </div>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ለነዳጅ፡</label>
+                                <input type="text" inputmode="decimal" id="alw-cost-fuel" oninput="formatAmountInput(this); updateAllowanceTotals()">
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ለአበል፡ <small style="color:#a0aec0;">(የቀን አበል × ቀናት በራስ ይሞላል፤ ማስተካከል ይቻላል)</small></label>
+                                <input type="text" inputmode="decimal" id="alw-cost-allowance" oninput="formatAmountInput(this); this.dataset.manual = '1'; updateAllowanceTotals()">
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ለትራንስፖርት፡</label>
+                                <input type="text" inputmode="decimal" id="alw-cost-transport" oninput="formatAmountInput(this); updateAllowanceTotals()">
+                            </div>
+                            <div style="flex: 1; min-width: 160px;">
+                                <label>ድምር፡</label>
+                                <input type="text" id="alw-total" readonly>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>8. አስተያየት (ካለ)፡</label>
+                            <textarea id="alw-remarks" rows="2"></textarea>
+                        </div>
+                        <button type="submit" class="btn-submit" id="alw-submit-btn"><i class="fas fa-save"></i> መዝግብ</button>
+                        <button type="button" class="btn-submit" id="alw-cancel-btn" style="background:#4a5568; display:none;" onclick="cancelAllowanceEdit()">ተወው</button>
+                    </form>
+                </section>
+
+                <section class="table-section">
+                    <h3 style="margin-bottom: 15px;"><i class="fas fa-list"></i> የአበል ጥያቄዎች ዝርዝር</h3>
+                    <p class="no-print" style="font-size:12px; color:#a0aec0; margin-bottom:10px;">ፊርማ በቅደም ተከተል ነው፦ ጠያቂ → የቅርብ ኃላፊ → የፈቀደው → የጸደቀው። እያንዳንዱ ፈራሚ ቀጣዩን ሰው ይመርጣል። 🖨 ቁልፍ የወረቀቱን ቅጽ ለህትመት ይከፍታል።</p>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ቀን</th>
+                                    <th>ሰራተኛ</th>
+                                    <th>የሚሄዱበት ቦታ</th>
+                                    <th>ጊዜ</th>
+                                    <th>ጠቅላላ ግምት</th>
+                                    <th>ጠያቂ</th>
+                                    <th>የቅርብ ኃላፊ</th>
+                                    <th>የፈቀደው</th>
+                                    <th>የጸደቀው</th>
+                                    <th class="no-print">ተግባር</th>
+                                </tr>
+                            </thead>
+                            <tbody id="alw-data-list"></tbody>
                         </table>
                     </div>
                 </section>
@@ -1284,7 +1397,7 @@
             </div>
             <form id="sign-password-form" onsubmit="submitSignPassword(event)">
                 <div class="form-group" id="sign-approver-group" style="display:none;">
-                    <label>ለማጽደቅ ለማን ይላክ፡</label>
+                    <label id="sign-approver-label">ለማጽደቅ ለማን ይላክ፡</label>
                     <select id="sign-approver-select"></select>
                     <p style="font-size:11px; color:#a0aec0; margin-top:4px;">የመረጡት ሰው ብቻ ይህን ማጽደቅ ይችላል፤ ሲፈርሙት ማሳወቂያ ይደርሰዋል።</p>
                 </div>
