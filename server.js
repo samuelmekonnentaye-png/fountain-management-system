@@ -180,7 +180,7 @@ function requirePermission(perm) {
 // ===== Per-module access (which sections a user may see / use) =====
 const ACCESS_MODULES = [
     'dashboard', 'payments', 'contracts', 'gallery', 'report', 'signature', 'trash',
-    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report', 'fleet_finance',
+    'fleet_vehicles', 'fleet_trips', 'fleet_maintenance', 'fleet_fuel', 'fleet_report', 'fleet_finance', 'fleet_allowance',
     'fleet_view_all' // lets a fleet officer see fleet entries made by OTHER people
 ];
 
@@ -1776,6 +1776,62 @@ app.post('/api/fleet/trips', requireAuth, requireModule('fleet_trips'), requireP
         res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
     }
 });
+// Edit a trip entry (the person who made it, or an Admin). The distance is
+// always recomputed from the two readings. The fuel-cost ESTIMATE is only
+// recomputed when the vehicle or the readings change, so correcting just a
+// destination or a date later doesn't silently re-price an old trip at today's fuel price.
+app.put('/api/fleet/trips/:id', requireAuth, requireModule('fleet_trips'), requirePermission('prepare'), async (req, res) => {
+    try {
+        const trip = await Trip.findById(req.params.id);
+        if (!trip) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (req.authUser.role !== 'Admin' && trip.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ ማስተካከል አይችሉም' });
+        }
+        const { department, vehicleId, destination, tripDate, departureTime } = req.body;
+        const departureKm = toNum(req.body.departureKm, NaN);
+        const returnKm = toNum(req.body.returnKm, NaN);
+        if (!department || !vehicleId || !tripDate) return res.status(400).json({ error: 'ዲፓርትመንት፣ ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
+        if (isNaN(departureKm) || isNaN(returnKm)) return res.status(400).json({ error: 'የወጣበት እና የተመለሰበት ኪሎሜትር ያስፈልጋል' });
+        if (returnKm < departureKm) return res.status(400).json({ error: 'የተመለሰበት ኪሜ ከወጣበት ኪሜ ያንሳል' });
+
+        const vehicle = await Vehicle.findById(vehicleId);
+        if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+        if (vehicle.isDeleted && vehicle._id.toString() !== trip.vehicleId) {
+            return res.status(400).json({ error: 'ይህ ተሽከርካሪ ተሰርዟል' });
+        }
+
+        const distanceKm = returnKm - departureKm;
+        const recalc = vehicle._id.toString() !== trip.vehicleId
+            || departureKm !== trip.departureKm || returnKm !== trip.returnKm;
+        if (recalc) {
+            const settings = await getFleetSettings();
+            const pricePerLiter = vehicle.fuelType === 'ቤንዚን' ? settings.benzinePricePerLiter : settings.dieselPricePerLiter;
+            trip.estimatedFuelCost = vehicle.kmPerLiter > 0
+                ? Math.round(distanceKm * (pricePerLiter / vehicle.kmPerLiter) * 100) / 100
+                : 0;
+        }
+        trip.vehicleId = vehicle._id.toString();
+        trip.vehiclePlate = vehicle.plateNumber;
+        trip.vehicleType = vehicle.vehicleType;
+        trip.department = department;
+        trip.destination = String(destination || '').trim() || '*';
+        trip.tripDate = tripDate;
+        trip.departureTime = departureTime || '';
+        trip.departureKm = departureKm;
+        trip.returnKm = returnKm;
+        trip.distanceKm = distanceKm;
+        await trip.save();
+
+        if (returnKm > (vehicle.currentKm || 0)) {
+            vehicle.currentKm = returnKm;
+            await vehicle.save();
+        }
+        res.json(trip);
+    } catch (err) {
+        logError('Fleet edit trip error:', err);
+        res.status(500).json({ error: 'ማስተካከል አልተቻለም' });
+    }
+});
 app.delete('/api/fleet/trips/:id', requireAuth, requireModule('fleet_trips'), requirePermission('prepare'), async (req, res) => {
     try {
         const trip = await Trip.findById(req.params.id);
@@ -2005,6 +2061,234 @@ app.post('/api/fleet/maintenance/:id/sign', requireAuth, requireModule('fleet_ma
 });
 
 // ---------- Fuel log (actual receipts) ----------
+// =====================================================================
+// ===== Field-work allowance requests (የመስክ ስራ የውሎ አበል ጥያቄ) =====
+// =====================================================================
+// Mirrors the paper form: purpose, period, destination, how they travel,
+// salary, daily allowance, estimated cost (fuel / allowance / transport) and
+// four signatures in a fixed order. Each signer picks who signs next.
+const ALLOWANCE_SLOTS = ['requester', 'supervisor', 'authorizer', 'approver'];
+const ALLOWANCE_TRAVEL = ['office_vehicle', 'public_transport', 'airplane'];
+
+const allowanceSchema = new mongoose.Schema({
+    userId: String,
+    requestDate: String,
+    employeeName: String,
+    purpose: String,
+    fromDate: String,
+    toDate: String,
+    days: { type: Number, default: 1 },
+    destination: String,
+    travelBy: { type: [String], default: [] },
+    salary: { type: Number, default: 0 },
+    dailyAllowance: { type: Number, default: 0 },
+    costFuel: { type: Number, default: 0 },
+    costAllowance: { type: Number, default: 0 },
+    costTransport: { type: Number, default: 0 },
+    total: { type: Number, default: 0 },
+    remarks: { type: String, default: '' },
+    requester: signSlotSchema,
+    supervisor: signSlotSchema,
+    authorizer: signSlotSchema,
+    approver: signSlotSchema,
+    pending: { userId: String, name: String, slot: String, requestedAt: Date },
+    createdAt: { type: Date, default: Date.now }
+});
+const Allowance = mongoose.model('Allowance', allowanceSchema);
+
+function allowanceScope(req) {
+    if (canViewAllFleet(req)) return {};
+    const me = req.authUser.id;
+    return { $or: [
+        { userId: me }, { 'pending.userId': me },
+        { 'requester.userId': me }, { 'supervisor.userId': me },
+        { 'authorizer.userId': me }, { 'approver.userId': me }
+    ] };
+}
+function isoDateOrNull(v) { return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null; }
+function readAllowanceBody(body, userDoc) {
+    const purpose = String(body.purpose || '').trim();
+    if (!purpose) return { error: 'የስራ ዓላማ እና አጭር መግለጫ ያስፈልጋል' };
+    const fromDate = isoDateOrNull(body.fromDate), toDate = isoDateOrNull(body.toDate);
+    if (!fromDate || !toDate) return { error: 'የመስክ ስራው የሚፈጀውን ጊዜ (ከ - እስከ) ያስገቡ' };
+    if (toDate < fromDate) return { error: '"እስከ" ቀን ከ"ከ" ቀን ያንሳል' };
+    const destination = String(body.destination || '').trim();
+    if (!destination) return { error: 'የሚሄዱበትን ቦታ ያስገቡ' };
+    const nums = {};
+    for (const k of ['salary', 'dailyAllowance', 'costFuel', 'costAllowance', 'costTransport']) {
+        const n = toNum(body[k], 0);
+        if (n < 0) return { error: 'ብር አሉታዊ መሆን አይችልም' };
+        nums[k] = n;
+    }
+    const a = fromDate.split('-').map(Number), b = toDate.split('-').map(Number);
+    const days = Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000) + 1;
+    const travelBy = Array.isArray(body.travelBy) ? Array.from(new Set(body.travelBy.filter(t => ALLOWANCE_TRAVEL.includes(t)))) : [];
+    return { data: {
+        requestDate: isoDateOrNull(body.requestDate) || new Date().toISOString().slice(0, 10),
+        employeeName: String(body.employeeName || '').trim() || (userDoc && (userDoc.fullName || userDoc.username)) || '',
+        purpose, fromDate, toDate, days, destination, travelBy,
+        salary: nums.salary, dailyAllowance: nums.dailyAllowance,
+        costFuel: nums.costFuel, costAllowance: nums.costAllowance, costTransport: nums.costTransport,
+        total: Math.round((nums.costFuel + nums.costAllowance + nums.costTransport) * 100) / 100,
+        remarks: String(body.remarks || '').trim()
+    } };
+}
+function allowanceFullyApproved(item) { return !!(item.approver && item.approver.userId); }
+function allowanceAnySigned(item) {
+    return ALLOWANCE_SLOTS.some(sl => item[sl] && item[sl].userId) || !!(item.pending && item.pending.userId);
+}
+async function clearAllowanceNotifications(id) {
+    try { await Notification.deleteMany({ recordId: String(id), module: 'fleet_allowance' }); }
+    catch (nErr) { logError('Clear allowance notifications error:', nErr); }
+}
+
+app.get('/api/fleet/allowance', requireAuth, requireModule('fleet_allowance', 'fleet_finance'), async (req, res) => {
+    try {
+        const range = dateRangeFilter(req.query, 'fromDate');
+        const ranged = Object.keys(range).length > 0;
+        const filter = ranged ? { $and: [allowanceScope(req), range] } : allowanceScope(req);
+        const list = await Allowance.find(filter).sort({ requestDate: -1, createdAt: -1 }).limit(ranged ? 5000 : 500);
+        res.json(list);
+    } catch (err) {
+        logError('Fleet get allowance error:', err);
+        res.status(500).json({ error: 'የአበል ጥያቄዎችን ማምጣት አልተቻለም' });
+    }
+});
+
+app.post('/api/fleet/allowance', requireAuth, requireModule('fleet_allowance'), requirePermission('prepare'), async (req, res) => {
+    try {
+        const r = readAllowanceBody(req.body, req.authUserDoc);
+        if (r.error) return res.status(400).json({ error: r.error });
+        const item = await Allowance.create({ userId: req.authUser.id, ...r.data });
+        res.json(item);
+    } catch (err) {
+        logError('Fleet add allowance error:', err);
+        res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
+    }
+});
+
+// Edit: the person who made it (or an Admin), until it is fully approved
+// (after that only an Admin). Edited content invalidates earlier signatures,
+// so they are cleared and signing starts again.
+app.put('/api/fleet/allowance/:id', requireAuth, requireModule('fleet_allowance'), requirePermission('prepare'), async (req, res) => {
+    try {
+        const item = await Allowance.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'ጥያቄው አልተገኘም' });
+        const isAdmin = req.authUser.role === 'Admin';
+        if (!isAdmin && item.userId !== req.authUser.id) return res.status(403).json({ error: 'የሌላ ሰው ጥያቄ ማስተካከል አይችሉም' });
+        if (!isAdmin && allowanceFullyApproved(item)) return res.status(403).json({ error: 'የጸደቀ ጥያቄ Admin ብቻ ማስተካከል ይችላል' });
+        const r = readAllowanceBody(req.body, req.authUserDoc);
+        if (r.error) return res.status(400).json({ error: r.error });
+        const wasSigned = allowanceAnySigned(item);
+        const ops = { $set: r.data };
+        if (wasSigned) ops.$unset = { requester: 1, supervisor: 1, authorizer: 1, approver: 1, pending: 1 };
+        const updated = await Allowance.findByIdAndUpdate(item._id, ops, { new: true });
+        if (wasSigned) await clearAllowanceNotifications(item._id);
+        res.json(updated);
+    } catch (err) {
+        logError('Fleet edit allowance error:', err);
+        res.status(500).json({ error: 'ማስተካከል አልተቻለም' });
+    }
+});
+
+app.delete('/api/fleet/allowance/:id', requireAuth, requireModule('fleet_allowance'), requirePermission('prepare'), async (req, res) => {
+    try {
+        const item = await Allowance.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'ጥያቄው አልተገኘም' });
+        const isAdmin = req.authUser.role === 'Admin';
+        if (!isAdmin && item.userId !== req.authUser.id) return res.status(403).json({ error: 'የሌላ ሰው ጥያቄ መሰረዝ አይችሉም' });
+        if (!isAdmin && allowanceFullyApproved(item)) return res.status(403).json({ error: 'የጸደቀ ጥያቄ Admin ብቻ መሰረዝ ይችላል' });
+        await item.deleteOne();
+        await clearAllowanceNotifications(item._id);
+        res.json({ message: 'ተሰርዟል' });
+    } catch (err) {
+        logError('Fleet delete allowance error:', err);
+        res.status(500).json({ error: 'ማጥፋት አልተቻለም' });
+    }
+});
+
+// Sign the NEXT step. The first signer is the person who made the request; each
+// later step may only be signed by the person the previous signer chose (or an
+// Admin). All but the last signer must choose who signs next.
+app.post('/api/fleet/allowance/:id/sign', requireAuth, requireModule('fleet_allowance'), async (req, res) => {
+    try {
+        const { slot, signaturePassword, sendToApproverId } = req.body;
+        const idx = ALLOWANCE_SLOTS.indexOf(slot);
+        if (idx === -1) return res.status(400).json({ error: 'ልክ ያልሆነ የፊርማ ቦታ' });
+
+        const me = req.authUserDoc || await User.findById(req.authUser.id);
+        if (!me) return res.status(401).json({ error: 'ተጠቃሚው አልተገኘም' });
+        const isAdmin = me.role === 'Admin';
+        const item = await Allowance.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'ጥያቄው አልተገኘም' });
+
+        for (let i = 0; i < idx; i++) {
+            const earlier = item[ALLOWANCE_SLOTS[i]];
+            if (!(earlier && earlier.userId)) return res.status(400).json({ error: 'የቀደመው ፊርማ ገና አልተፈረመም' });
+        }
+        if (item[slot] && item[slot].userId) return res.status(400).json({ error: 'ይህ ቦታ ቀድሞ ተፈርሟል' });
+
+        if (slot === 'requester') {
+            if (!hasPermission(me, 'prepare')) return res.status(403).json({ error: 'ይህን ለማድረግ ተገቢው ኃላፊነት የለዎትም' });
+            if (!isAdmin && item.userId !== req.authUser.id) return res.status(403).json({ error: 'የሌላ ሰው ጥያቄ ላይ መፈረም አይችሉም' });
+        } else {
+            if (!hasPermission(me, 'approve')) return res.status(403).json({ error: 'ይህን ለማጽደቅ ፈቃድ የለዎትም' });
+            const assigned = item.pending && item.pending.userId === req.authUser.id;
+            if (!assigned && !isAdmin) return res.status(403).json({ error: 'ይህ ጥያቄ ለእርስዎ ለመፈረም ገና አልተላከም' });
+        }
+
+        const sig = await Signature.findOne({ userId: req.authUser.id });
+        if (!sig) return res.status(400).json({ error: 'መጀመሪያ የራስዎን ፊርማ ይመዝገቡ' });
+        const matches = await bcrypt.compare(String(signaturePassword || ''), sig.signaturePasswordHash);
+        if (!matches) return res.status(401).json({ error: 'የፊርማ ፓስወርድ ትክክል አይደለም' });
+
+        const payload = { userId: sig.userId, fullName: sig.fullName, responsibility: sig.responsibility, signatureImage: sig.signatureImage, signedAt: new Date() };
+        const set = { [slot]: payload };
+        const isLast = idx === ALLOWANCE_SLOTS.length - 1;
+        let nextUserId = null, nextSlot = null;
+        if (!isLast) {
+            if (!sendToApproverId) return res.status(400).json({ error: 'እባክዎ ቀጣይ የሚፈርመውን ሰው ይምረጡ' });
+            const nextUser = await User.findById(sendToApproverId);
+            if (!nextUser || nextUser.status === 'pending' || nextUser.status === 'rejected' || !hasPermission(nextUser, 'approve')) {
+                return res.status(400).json({ error: 'የመረጡት ሰው ማጽደቅ የሚያስችል ኃላፊነት የለውም' });
+            }
+            const nextSig = await Signature.findOne({ userId: sendToApproverId });
+            if (!nextSig) return res.status(400).json({ error: 'የመረጡት ሰው ገና ፊርማ አልመዘገበም' });
+            nextSlot = ALLOWANCE_SLOTS[idx + 1];
+            nextUserId = sendToApproverId;
+            set.pending = { userId: sendToApproverId, name: nextSig.fullName, slot: nextSlot, requestedAt: new Date() };
+        } else {
+            set.pending = { userId: null, name: null, slot: null, requestedAt: item.pending ? item.pending.requestedAt : null };
+        }
+
+        const updated = await Allowance.findByIdAndUpdate(item._id, { $set: set }, { new: true });
+        const label = `አበል — ${updated.employeeName}`;
+        try {
+            if (nextUserId) {
+                await Notification.create({
+                    toUserId: nextUserId, type: 'approval_request', module: 'fleet_allowance',
+                    recordId: updated._id.toString(), recordName: label,
+                    fromUserId: sig.userId, fromFullName: sig.fullName,
+                    message: `${sig.fullName} "${label}" የተባለውን የውሎ አበል ጥያቄ እንዲፈርሙ ልከውልዎታል።`
+                });
+            } else if (updated.userId) {
+                await Notification.create({
+                    toUserId: updated.userId, type: 'approved', module: 'fleet_allowance',
+                    recordId: updated._id.toString(), recordName: label,
+                    fromUserId: sig.userId, fromFullName: sig.fullName,
+                    message: `${sig.fullName} "${label}" የተባለውን የውሎ አበል ጥያቄ አጽድቀዋል።`
+                });
+            }
+        } catch (notifErr) {
+            logError('Create allowance notification error:', notifErr);
+        }
+        res.json(updated);
+    } catch (err) {
+        logError('Sign allowance error:', err);
+        res.status(500).json({ error: 'ፊርማ ማድረግ አልተቻለም' });
+    }
+});
+
 app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel', 'fleet_finance'), async (req, res) => {
     try {
         const range = dateRangeFilter(req.query, 'date');
@@ -2051,6 +2335,45 @@ app.post('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel'), requi
     } catch (err) {
         logError('Fleet add fuel log error:', err);
         res.status(500).json({ error: 'መመዝገብ አልተቻለም' });
+    }
+});
+// Edit a fuel purchase (the person who made it, or an Admin).
+app.put('/api/fleet/fuel-logs/:id', requireAuth, requireModule('fleet_fuel'), requirePermission('prepare'), upload.single('receipt'), async (req, res) => {
+    try {
+        const log = await FuelLog.findById(req.params.id);
+        if (!log) return res.status(404).json({ error: 'ምዝገባው አልተገኘም' });
+        if (req.authUser.role !== 'Admin' && log.userId !== req.authUser.id) {
+            return res.status(403).json({ error: 'የሌላ ሰው ምዝገባ ማስተካከል አይችሉም' });
+        }
+        const { vehicleId, date, station } = req.body;
+        if (!vehicleId || !date) return res.status(400).json({ error: 'ተሽከርካሪ እና ቀን ያስፈልጋሉ' });
+        const liters = toNum(req.body.liters, NaN);
+        const cost = toNum(req.body.cost, NaN);
+        if (isNaN(liters) || liters <= 0) return res.status(400).json({ error: 'ትክክለኛ የሊትር መጠን ያስገቡ' });
+        if (isNaN(cost) || cost < 0) return res.status(400).json({ error: 'ትክክለኛ ወጪ ያስገቡ' });
+        const vehicle = await Vehicle.findById(vehicleId);
+        if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
+
+        if (req.file) {
+            try { log.receipt = await uploadFleetFile(req.file, 'fountain-fleet-receipts'); }
+            catch (upErr) {
+                logError('Fleet fuel receipt upload error:', upErr);
+                return res.status(500).json({ error: 'ደረሰኙን መጫን አልተቻለም' });
+            }
+        }
+        log.vehicleId = vehicle._id.toString();
+        log.vehiclePlate = vehicle.plateNumber;
+        log.vehicleType = vehicle.vehicleType;
+        log.date = date;
+        log.station = String(station || '').trim();
+        log.liters = liters;
+        log.cost = cost;
+        log.odometerKm = toNum(req.body.odometerKm, 0);
+        await log.save();
+        res.json(log);
+    } catch (err) {
+        logError('Fleet edit fuel log error:', err);
+        res.status(500).json({ error: 'ማስተካከል አልተቻለም' });
     }
 });
 app.delete('/api/fleet/fuel-logs/:id', requireAuth, requireModule('fleet_fuel'), requirePermission('prepare'), async (req, res) => {
