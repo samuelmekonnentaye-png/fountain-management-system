@@ -2192,6 +2192,10 @@ function renderTripList() {
 }
 
 let tripEditId = null;
+// The date being worked on. After each registration the rest of the form is
+// cleared but the date stays, so ten vehicles for the same day need the date
+// chosen only once; it changes only when the person picks another one.
+let tripWorkingDate = '';
 
 function setTripFormMode(editing) {
     const title = document.getElementById('trip-form-title');
@@ -2228,6 +2232,7 @@ function cancelTripEdit() {
     document.getElementById('trip-form').reset();
     document.getElementById('trip-estimate-preview').textContent = '';
     setTripFormMode(false);
+    if (tripWorkingDate) document.getElementById('trip-date').value = tripWorkingDate;
 }
 
 async function handleTripSubmit(e) {
@@ -2250,6 +2255,7 @@ async function handleTripSubmit(e) {
         });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        if (!editing) tripWorkingDate = payload.tripDate;
         cancelTripEdit();
         invalidateFleetReports();
         fetchTripLogs();
@@ -2479,6 +2485,7 @@ function renderFuelLogList() {
 }
 
 let fuelEditId = null;
+let fuelWorkingDate = '';   // kept between registrations, like the trip date
 
 function setFuelFormMode(editing) {
     const title = document.getElementById('fuel-form-title');
@@ -2510,6 +2517,7 @@ function cancelFuelEdit() {
     document.getElementById('fuel-form').reset();
     delete document.getElementById('fuel-cost').dataset.manual;
     setFuelFormMode(false);
+    if (fuelWorkingDate) document.getElementById('fuel-date').value = fuelWorkingDate;
 }
 
 async function handleFuelLogSubmit(e) {
@@ -2529,6 +2537,7 @@ async function handleFuelLogSubmit(e) {
         const res = await authFetch(editing ? `/api/fleet/fuel-logs/${editing}` : '/api/fleet/fuel-logs', { method: editing ? 'PUT' : 'POST', body: fd });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'ስህተት ተፈጥሯል'); return; }
+        if (!editing) fuelWorkingDate = fd.get('date');
         cancelFuelEdit();
         invalidateFleetReports();
         fetchFuelLogs();
@@ -3124,6 +3133,10 @@ async function saveAccessModal() {
 
 document.addEventListener('DOMContentLoaded', () => {
     initEthDatePickers();
+    const tripDateEl = document.getElementById('trip-date');
+    if (tripDateEl) tripDateEl.addEventListener('change', () => { if (!tripEditId) tripWorkingDate = tripDateEl.value; });
+    const fuelDateEl = document.getElementById('fuel-date');
+    if (fuelDateEl) fuelDateEl.addEventListener('change', () => { if (!fuelEditId) fuelWorkingDate = fuelDateEl.value; });
     applyMyAccess();
     refreshMyAccess();
     if (currentUser && currentUser.role === 'Admin') renderAccessCheckboxes('reg-access-box', [], 'reg-access-cb');
