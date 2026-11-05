@@ -3950,3 +3950,75 @@ function allowanceStatusPlain(item) {
     if (item.requester && item.requester.userId) return 'ተፈርሟል';
     return 'ያልተፈረመ';
 }
+
+
+// =====================================================================
+// ===== Keyboard entry: move between fields without the mouse =====
+// =====================================================================
+// Works in every form of the system.
+//   Enter            -> next field            (on the LAST field it saves/submits the form)
+//   Shift+Enter      -> previous field
+//   ↓ / ↑            -> next / previous field (in text boxes)
+//   → at the end of the text / ← at the start -> next / previous field
+// Tab and Shift+Tab keep working as they always did. Multi-line boxes keep
+// Enter for a new line, and number/time/date boxes keep their own arrow keys.
+// A form can opt out with the attribute data-no-key-nav.
+const KEYNAV_TEXT_TYPES = ['text', 'search', 'tel', 'email', 'url', 'password'];
+const KEYNAV_ENTER_TYPES = KEYNAV_TEXT_TYPES.concat(['number', 'date', 'time', 'datetime-local', 'month', 'week', 'checkbox']);
+
+function keyNavVisible(el) {
+    for (let n = el; n && n !== document.body && n.nodeType === 1; n = n.parentElement) {
+        if (n.hidden || window.getComputedStyle(n).display === 'none') return false;
+    }
+    return true;
+}
+function keyNavFields(form) {
+    return Array.from(form.elements).filter(el => {
+        const tag = el.tagName;
+        if (tag !== 'INPUT' && tag !== 'SELECT' && tag !== 'TEXTAREA') return false;
+        if (el.disabled || el.readOnly) return false;
+        const type = (el.type || '').toLowerCase();
+        if (['hidden', 'button', 'submit', 'reset', 'image'].includes(type)) return false;
+        return keyNavVisible(el);
+    });
+}
+function keyNavFocus(el) {
+    if (!el) return;
+    el.focus();
+    const type = (el.type || '').toLowerCase();
+    if (el.tagName === 'INPUT' && KEYNAV_TEXT_TYPES.includes(type) && typeof el.select === 'function') el.select();
+}
+
+document.addEventListener('keydown', e => {
+    const el = e.target;
+    if (!el || e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+    const tag = el.tagName;
+    if ((tag !== 'INPUT' && tag !== 'SELECT') || !el.form || el.form.hasAttribute('data-no-key-nav')) return;
+    const type = (el.type || '').toLowerCase();
+    const isText = tag === 'INPUT' && KEYNAV_TEXT_TYPES.includes(type);
+
+    let dir = 0;      // +1 next, -1 previous
+    let submitOnLast = false;
+    if (e.key === 'Enter') {
+        if (tag === 'INPUT' && !KEYNAV_ENTER_TYPES.includes(type)) return;   // file, radio, buttons: leave alone
+        dir = e.shiftKey ? -1 : 1;
+        submitOnLast = !e.shiftKey;
+    } else if (!e.shiftKey && isText) {
+        const atEnd = el.selectionStart === el.selectionEnd && el.selectionEnd === el.value.length;
+        const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+        if (e.key === 'ArrowDown' || (e.key === 'ArrowRight' && atEnd)) dir = 1;
+        else if (e.key === 'ArrowUp' || (e.key === 'ArrowLeft' && atStart)) dir = -1;
+    }
+    if (!dir) return;
+
+    const fields = keyNavFields(el.form);
+    const idx = fields.indexOf(el);
+    if (idx === -1) return;
+    e.preventDefault();
+    const target = fields[idx + dir];
+    if (target) keyNavFocus(target);
+    else if (submitOnLast) {
+        if (typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+        else { const btn = el.form.querySelector('button[type="submit"], input[type="submit"]'); if (btn) btn.click(); }
+    }
+});
