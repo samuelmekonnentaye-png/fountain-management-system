@@ -3872,36 +3872,47 @@ function printAllowanceForm(id) {
     const fill = (v, min) => `<span class="fill" style="min-width:${min || 120}px;">${(v === '' || v == null) ? '&nbsp;' : fleetEsc(v)}</span>`;
     const box = on => `<span class="box">${on ? '&#10003;' : ''}</span>`;
     const travel = a.travelBy || [];
-    const sigBlock = (slot, label) => {
+    // One signature: the image (if signed) and, under it, who signed and when.
+    const sigParts = slot => {
         const p = a[slot];
         const img = p && p.signatureImage ? `<img src="${fleetEsc(p.signatureImage)}" alt="">` : '';
         const who = p && p.userId ? `${fleetEsc(p.fullName)}${p.signedAt ? ` — ${fleetEsc(isoToEthText(dateToISO(new Date(p.signedAt))))} ዓ.ም` : ''}` : '';
-        return `<div class="sig"><div class="sig-label">${label}</div><div class="sig-box">${img}</div><div class="sig-name">${who || '&nbsp;'}</div></div>`;
+        return { img, who };
     };
+    const sigCol = (slot, label) => {
+        const s = sigParts(slot);
+        return `<div class="sigcol"><div class="sig-label">${label}</div><div class="sig-box">${s.img}</div><div class="sig-name">${s.who || '&nbsp;'}</div></div>`;
+    };
+    const req = sigParts('requester');
     const origin = window.location.origin;
     win.document.write(`<!DOCTYPE html><html lang="am"><head><meta charset="utf-8"><title>${fleetEsc(T.title)}</title>
 <style>
-@page { size: A4; margin: 14mm; }
+@page { size: A4; margin: 10mm 12mm; }
 * { box-sizing: border-box; }
-body { font-family: 'Nyala','Noto Sans Ethiopic','Abyssinica SIL','Segoe UI',serif; font-size: 13pt; color:#000; margin:0; }
-table.hdr { width:100%; border-collapse:collapse; margin-bottom:18px; }
-table.hdr td { border:1px solid #000; padding:6px 10px; vertical-align:middle; }
-.logo { width:22%; text-align:center; } .logo img { max-width:100%; max-height:90px; }
-.org { font-weight:bold; line-height:1.4; } .title { font-weight:bold; }
-.small { font-size:11pt; }
-.date { text-align:right; margin-bottom:14px; }
-ol { padding-left:26px; margin:0; } ol li { margin-bottom:12px; line-height:1.7; }
+body { font-family: 'Nyala','Noto Sans Ethiopic','Abyssinica SIL','Segoe UI',serif; font-size: 11.5pt; color:#000; margin:0; }
+table.hdr { width:100%; border-collapse:collapse; margin-bottom:10px; }
+table.hdr td { border:1px solid #000; padding:4px 8px; vertical-align:middle; }
+.logo { width:22%; text-align:center; } .logo img { max-width:100%; max-height:64px; }
+.org { font-weight:bold; line-height:1.3; } .title { font-weight:bold; }
+.small { font-size:10pt; }
+.date { text-align:right; margin-bottom:8px; }
+ol { padding-left:24px; margin:0; } ol li { margin-bottom:7px; line-height:1.45; }
 .fill { display:inline-block; border-bottom:1px dotted #000; padding:0 6px; }
-.fill.block { display:block; min-height:24px; margin-top:2px; }
-.box { display:inline-block; width:46px; height:20px; border:1px solid #000; vertical-align:middle; text-align:center; margin:0 14px 0 6px; line-height:18px; }
-.costs div { margin-left:160px; margin-top:4px; }
-.sigs { margin-top:22px; }
-.sig { display:flex; align-items:flex-end; gap:12px; margin-top:16px; }
-.sig-label { width:210px; font-weight:bold; text-align:right; }
-.sig-box { flex:0 0 190px; height:46px; border-bottom:1px dotted #000; text-align:center; } .sig-box img { max-height:42px; max-width:180px; }
-.sig-name { flex:1; font-size:11pt; }
+.fill.block { display:block; min-height:20px; margin-top:1px; }
+.box { display:inline-block; width:38px; height:17px; border:1px solid #000; vertical-align:middle; text-align:center; margin:0 10px 0 4px; line-height:15px; }
+.costs div { margin-left:150px; margin-top:2px; }
+.sig-box { height:36px; border-bottom:1px dotted #000; text-align:center; } .sig-box img { max-height:34px; max-width:100%; }
+.sig-name { font-size:9pt; min-height:12px; }
+.nsig { display:inline-block; vertical-align:bottom; margin-left:8px; }
+.nsig .sig-box { display:inline-block; width:150px; vertical-align:bottom; }
+.nsig .sig-name { margin-left:2px; }
+.sigs3 { display:flex; gap:18px; margin-top:12px; }
+.sigcol { flex:1; text-align:center; }
+.sig-label { font-weight:bold; font-size:10.5pt; }
+.sigcol .sig-box { height:44px; margin-top:2px; }
 @media print { .noprint { display:none; } }
 </style></head><body>
+<div id="sheet">
 <table class="hdr">
  <tr>
   <td class="logo" rowspan="2"><img src="${origin}/images/logo.png" alt=""></td>
@@ -3914,29 +3925,39 @@ ol { padding-left:26px; margin:0; } ol li { margin-bottom:12px; line-height:1.7;
   <td class="small">${fleetEsc(T.pageLabel)}: ${fleetEsc(T.pageNumber)}<br>Page number</td>
  </tr>
 </table>
-<div class="date">${fleetEsc(T.date)}፡ ${fill(isoToEthText(a.requestDate) + ' ዓ.ም', 150)}</div>
+<div class="date">${fleetEsc(T.date)}፡ ${fill(isoToEthText(a.requestDate) + ' ዓ.ም', 130)}</div>
 <ol>
  <li>${fleetEsc(T.purpose)} <span class="fill block">${fleetEsc(a.purpose)}</span></li>
- <li>${fleetEsc(T.period)} ${fill(isoToEthText(a.fromDate), 110)} ${fleetEsc(T.periodTo)} ${fill(isoToEthText(a.toDate), 110)} <small>(${a.days || 1} ቀን)</small></li>
- <li>${fleetEsc(T.destination)} ${fill(a.destination, 260)}</li>
+ <li>${fleetEsc(T.period)} ${fill(isoToEthText(a.fromDate), 100)} ${fleetEsc(T.periodTo)} ${fill(isoToEthText(a.toDate), 100)} <small>(${a.days || 1} ቀን)</small></li>
+ <li>${fleetEsc(T.destination)} ${fill(a.destination, 240)}</li>
  <li>${fleetEsc(T.travel)} ${fleetEsc(T.travelOffice)} ${box(travel.includes('office_vehicle'))} ${fleetEsc(T.travelPublic)} ${box(travel.includes('public_transport'))} ${fleetEsc(T.travelAir)} ${box(travel.includes('airplane'))}</li>
- <li>${fleetEsc(T.salary)} ${fill(money(a.salary) + ' ብር', 200)}</li>
- <li>${fleetEsc(T.daily)} ${fill(money(a.dailyAllowance) + ' ብር', 200)}</li>
- <li class="costs">${fleetEsc(T.costs)} ${fleetEsc(T.costFuel)} ${fill(money(a.costFuel), 150)}
-   <div>${fleetEsc(T.costAllowance)} ${fill(money(a.costAllowance), 150)}</div>
-   <div>${fleetEsc(T.costTransport)} ${fill(money(a.costTransport), 150)}</div>
-   <div><b>${fleetEsc(T.costTotal)}</b> ${fill(money(a.total), 150)}</div></li>
+ <li>${fleetEsc(T.salary)} ${fill(money(a.salary) + ' ብር', 180)}</li>
+ <li>${fleetEsc(T.daily)} ${fill(money(a.dailyAllowance) + ' ብር', 180)}</li>
+ <li class="costs">${fleetEsc(T.costs)} ${fleetEsc(T.costFuel)} ${fill(money(a.costFuel), 130)}
+   <div>${fleetEsc(T.costAllowance)} ${fill(money(a.costAllowance), 130)}</div>
+   <div>${fleetEsc(T.costTransport)} ${fill(money(a.costTransport), 130)}</div>
+   <div><b>${fleetEsc(T.costTotal)}</b> ${fill(money(a.total), 130)}</div></li>
  <li>${fleetEsc(T.remarks)} <span class="fill block">${fleetEsc(a.remarks || '')}</span></li>
- <li>${fleetEsc(T.employee)} ${fill(a.employeeName, 260)}</li>
+ <li>${fleetEsc(T.employee)} ${fill(a.employeeName, 200)}
+   <span class="nsig"><b>${fleetEsc(T.sigRequester)}</b> <span class="sig-box">${req.img}</span><div class="sig-name">${req.who || '&nbsp;'}</div></span></li>
 </ol>
-<div class="sigs">
- ${sigBlock('requester', fleetEsc(T.sigRequester))}
- ${sigBlock('supervisor', fleetEsc(T.sigSupervisor))}
- ${sigBlock('authorizer', fleetEsc(T.sigAuthorizer))}
- ${sigBlock('approver', fleetEsc(T.sigApprover))}
+<div class="sigs3">
+ ${sigCol('supervisor', fleetEsc(T.sigSupervisor))}
+ ${sigCol('authorizer', fleetEsc(T.sigAuthorizer))}
+ ${sigCol('approver', fleetEsc(T.sigApprover))}
+</div>
 </div>
 <p class="noprint" style="margin-top:24px; text-align:center;"><button onclick="window.print()" style="padding:8px 18px; font-size:14px;">አትም / PDF አስቀምጥ</button></p>
-<script>window.onload = function () { setTimeout(function () { window.print(); }, 400); };<\/script>
+<script>
+// The form must stay on ONE page: if the text is long enough to overflow an A4
+// sheet, shrink everything a little instead of spilling onto a second page.
+window.onload = function () {
+  var sheet = document.getElementById('sheet');
+  var maxH = 1020; // printable height of A4 (297mm - margins) in CSS pixels, with a little spare
+  if (sheet && sheet.offsetHeight > maxH) document.body.style.zoom = Math.max(0.6, maxH / sheet.offsetHeight);
+  setTimeout(function () { window.print(); }, 400);
+};
+<\/script>
 </body></html>`);
     win.document.close();
 }
