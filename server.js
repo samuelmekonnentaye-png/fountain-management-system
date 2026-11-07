@@ -2122,6 +2122,9 @@ function readAllowanceBody(body, userDoc) {
     }
     const a = fromDate.split('-').map(Number), b = toDate.split('-').map(Number);
     const days = Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000) + 1;
+    // The allowance amount is always the daily allowance x the number of days, worked out
+    // here (not trusted from the browser), so it can never disagree with them.
+    nums.costAllowance = Math.round(nums.dailyAllowance * days * 100) / 100;
     const travelBy = Array.isArray(body.travelBy) ? Array.from(new Set(body.travelBy.filter(t => ALLOWANCE_TRAVEL.includes(t)))) : [];
     return { data: {
         requestDate: isoDateOrNull(body.requestDate) || new Date().toISOString().slice(0, 10),
