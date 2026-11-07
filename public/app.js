@@ -3209,17 +3209,18 @@ function fleetFinanceModel(d) {
     const fuelCost = round2(d.fuel.reduce((s, f) => s + (f.cost || 0), 0));
     const maintCost = round2(d.maint.reduce((s, x) => s + (x.cost || 0), 0));
     const est = round2(d.trips.reduce((s, t) => s + (t.estimatedFuelCost || 0), 0));
-    // Allowance requests count only once fully approved, and only the allowance +
-    // transport parts (the fuel part of the request is covered by the fuel receipts).
+    // Every allowance request counts as an expense, approved or not (the status is shown
+    // beside it). Only the allowance + transport parts are added: the fuel part of the
+    // request is already covered by the fuel receipts.
     const isApproved = x => !!(x.approver && x.approver.userId);
     const alOf = x => (x.costAllowance || 0) + (x.costTransport || 0);
     const approvedAl = (d.allowances || []).filter(isApproved);
     const pendingAl = (d.allowances || []).filter(x => !isApproved(x));
-    const allowanceCost = round2(approvedAl.reduce((sum, x) => sum + alOf(x), 0));
+    const allowanceCost = round2((d.allowances || []).reduce((sum, x) => sum + alOf(x), 0));
     const allowancePending = round2(pendingAl.reduce((sum, x) => sum + alOf(x), 0));
     return {
         vehicles, depts, fuelCost, maintCost, allowanceCost,
-        allowanceApprovedCount: approvedAl.length, allowancePendingCount: pendingAl.length, allowancePending,
+        allowanceCount: (d.allowances || []).length, allowanceApprovedCount: approvedAl.length, allowancePendingCount: pendingAl.length, allowancePending,
         total: round2(fuelCost + maintCost + allowanceCost), est
     };
 }
@@ -3268,9 +3269,9 @@ function renderFleetFinancePreview() {
     document.getElementById('ffin-summary-list').innerHTML = `
         <tr><td>1</td><td>የነዳጅ ግዢ (በደረሰኝ፣ ${num(d.fuel.length)} ምዝገባ)</td><td>${money(m.fuelCost)}</td></tr>
         <tr><td>2</td><td>የጥገና ወጪ (${num(d.maint.length)} ምዝገባ)</td><td>${money(m.maintCost)}</td></tr>
-        <tr><td>3</td><td>አበል እና ትራንስፖርት (የጸደቀ፣ ${num(m.allowanceApprovedCount)} ጥያቄ)</td><td>${money(m.allowanceCost)}</td></tr>
+        <tr><td>3</td><td>አበል እና ትራንስፖርት (${num(m.allowanceCount)} ጥያቄ)</td><td>${money(m.allowanceCost)}</td></tr>
         <tr style="font-weight:bold;"><td></td><td>ጠቅላላ ወጪ</td><td>${money(m.total)}</td></tr>
-        ${m.allowancePendingCount ? `<tr style="color:#d69e2e;"><td></td><td>ገና ያልጸደቁ የአበል ጥያቄዎች (${num(m.allowancePendingCount)}) — በጠቅላላው አልተካተቱም</td><td>${money(m.allowancePending)}</td></tr>` : ''}
+        ${m.allowancePendingCount ? `<tr style="color:#d69e2e;"><td></td><td>ከአበሉ ውስጥ ገና ያልጸደቁ (${num(m.allowancePendingCount)}) — በጠቅላላው ተካተዋል</td><td>${money(m.allowancePending)}</td></tr>` : ''}
         <tr style="color:#a0aec0;"><td></td><td>ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
     document.getElementById('ffin-vehicle-list').innerHTML = m.vehicles.length ? m.vehicles.map((v, i) => `
         <tr>
@@ -3398,14 +3399,14 @@ function buildFleetFinanceWorkbook(data, logo) {
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'የወጪ አይነት', 'መጠን (ብር)'], [
         [1, 'የነዳጅ ግዢ (በደረሰኝ)', m.fuelCost],
         [2, 'የጥገና ወጪ', m.maintCost],
-        [3, 'አበል እና ትራንስፖርት (የጸደቀ)', m.allowanceCost]
+        [3, 'አበል እና ትራንስፖርት', m.allowanceCost]
     ], [{}, { align: 'left' }, { fmt: MONEY, align: 'right' }], { labelCol: 2, label: 'ጠቅላላ ወጪ', cols: [3] });
     r -= 1;
     kit.band(r, `ማስታወሻ፦ ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
         { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
     r += 1;
     if (m.allowancePendingCount > 0) {
-        kit.band(r, `ማስታወሻ፦ ገና ያልጸደቁ ${m.allowancePendingCount} የአበል ጥያቄዎች (${m.allowancePending.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር) በጠቅላላው ውስጥ አልተካተቱም`,
+        kit.band(r, `ማስታወሻ፦ በአበሉ ድምር ውስጥ ገና ያልጸደቁ ${m.allowancePendingCount} ጥያቄዎች (${m.allowancePending.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር) ተካተዋል`,
             { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
         r += 1;
     }
@@ -3445,7 +3446,7 @@ function buildFleetFinanceWorkbook(data, logo) {
         { labelCol: 2, label: 'ድምር', cols: [7] });
 
     // 6) allowance requests (detail)
-    section('የአበል ዝርዝር (ለአበል እና ለትራንስፖርት የጸደቁት ብቻ በጠቅላላው ይቆጠራሉ)');
+    section('የአበል ዝርዝር (የጸደቁትም ያልጸደቁትም በጠቅላላው ይቆጠራሉ፤ ሁኔታው በመጨረሻው አምድ ይታያል)');
     const alSorted = (data.allowances || []).slice().sort((a, b) => String(a.fromDate).localeCompare(String(b.fromDate)));
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ሰራተኛ', 'የሄዱበት ቦታ', 'ጊዜ (ከ - እስከ)', 'ቀናት', 'ለአበል (ብር)', 'ለትራንስፖርት (ብር)', 'ሁኔታ'],
         alSorted.map((x, i) => [i + 1, x.employeeName || '', x.destination || '', `${isoToEthText(x.fromDate)} - ${isoToEthText(x.toDate)}`, x.days || 1, x.costAllowance || 0, x.costTransport || 0, allowanceStatusPlain(x)]),
@@ -3673,21 +3674,25 @@ function setAllowanceDefaults() {
 function initAllowanceSection() {
     fetchAllowances();
     if (!allowanceEditId) setAllowanceDefaults();
-    updateAllowanceTotals();
+    updateAllowanceTotals(!!allowanceEditId);
 }
 
 // days = inclusive number of days; the allowance amount follows daily x days
 // until someone types it by hand; total = fuel + allowance + transport.
-function updateAllowanceTotals() {
+function updateAllowanceTotals(keepStoredAllowance) {
     const from = document.getElementById('alw-from').value;
     const to = document.getElementById('alw-to').value;
     const daysEl = document.getElementById('alw-days');
     const days = (from && to && to >= from) ? daysBetweenISO(from, to) : 0;
     if (daysEl) daysEl.value = days ? `${days} ቀን` : '';
-    const allowEl = document.getElementById('alw-cost-allowance');
-    if (allowEl && allowEl.dataset.manual !== '1') {
+    // ለአበል = የቀን አበል x ቀናት, recomputed EVERY time the daily amount or either date
+    // changes. When one of them is missing the box is emptied instead of keeping an
+    // old number. (Only when an existing request is first opened for editing is its
+    // saved amount shown untouched, until the daily amount or a date is changed.)
+    if (!keepStoredAllowance) {
         const daily = getAmountValue('alw-daily');
         if (days && !isNaN(daily)) setAmountValue('alw-cost-allowance', Math.round(daily * days * 100) / 100);
+        else setAmountValue('alw-cost-allowance', '');
     }
     const sum = ['alw-cost-fuel', 'alw-cost-allowance', 'alw-cost-transport'].reduce((s, id) => { const v = getAmountValue(id); return s + (isNaN(v) ? 0 : v); }, 0);
     setAmountValue('alw-total', Math.round(sum * 100) / 100);
@@ -3782,11 +3787,10 @@ function startAllowanceEdit(id) {
     setAmountValue('alw-salary', a.salary || '');
     setAmountValue('alw-daily', a.dailyAllowance || '');
     setAmountValue('alw-cost-fuel', a.costFuel || '');
-    document.getElementById('alw-cost-allowance').dataset.manual = '1';   // keep the saved amount
     setAmountValue('alw-cost-allowance', a.costAllowance || 0);
     setAmountValue('alw-cost-transport', a.costTransport || '');
     document.getElementById('alw-remarks').value = a.remarks || '';
-    updateAllowanceTotals();
+    updateAllowanceTotals(true);
     setAllowanceFormMode(true);
     document.getElementById('allowance-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -3797,7 +3801,6 @@ function allowanceAnySignedClient(a) {
 function cancelAllowanceEdit() {
     allowanceEditId = null;
     document.getElementById('allowance-form').reset();
-    delete document.getElementById('alw-cost-allowance').dataset.manual;
     setAllowanceFormMode(false);
     setAllowanceDefaults();
     updateAllowanceTotals();
