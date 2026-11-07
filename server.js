@@ -1540,6 +1540,26 @@ function maintenanceScope(req) {
     return { $or: [{ userId: me }, { 'approval.pendingApproverId': me }, { 'approvedBy.userId': me }] };
 }
 
+// ----- Paging for the long list pages ("ተጨማሪ አሳይ") -----
+// ?limit=20&skip=0 returns just that slice, with the full number of matching
+// entries in the X-Total-Count header. Without ?limit nothing changes (the
+// newest entries as a plain array), so older pages and the reports still work.
+function pageOf(query) {
+    const lim = parseInt(query.limit, 10);
+    if (!Number.isFinite(lim) || lim < 1) return null;
+    return { limit: Math.min(lim, 200), skip: Math.max(0, parseInt(query.skip, 10) || 0) };
+}
+async function respondList(req, res, Model, filter, sort, fallbackLimit) {
+    const pg = pageOf(req.query);
+    if (!pg) return res.json(await Model.find(filter).sort(sort).limit(fallbackLimit));
+    const [total, items] = await Promise.all([
+        Model.countDocuments(filter),
+        Model.find(filter).sort(sort).skip(pg.skip).limit(pg.limit)
+    ]);
+    res.set('X-Total-Count', String(total));
+    res.json(items);
+}
+
 // ---------- helpers ----------
 function toNum(v, fallback) {
     if (v === undefined || v === null || v === '') return fallback;
@@ -1727,8 +1747,7 @@ app.get('/api/fleet/trips', requireAuth, requireModule('fleet_trips', 'fleet_rep
             const ranged = await Trip.find({ ...fleetScope(req), tripDate: range }).sort({ tripDate: 1, createdAt: 1 }).limit(5000);
             return res.json(ranged);
         }
-        const list = await Trip.find(fleetScope(req)).sort({ tripDate: -1, createdAt: -1 }).limit(500);
-        res.json(list);
+        await respondList(req, res, Trip, fleetScope(req), { tripDate: -1, createdAt: -1, _id: -1 }, 500);
     } catch (err) {
         logError('Fleet get trips error:', err);
         res.status(500).json({ error: 'የአጠቃቀም ምዝገባ ማምጣት አልተቻለም' });
@@ -1853,8 +1872,7 @@ app.get('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance'
         const range = dateRangeFilter(req.query, 'date');
         const ranged = Object.keys(range).length > 0;
         const filter = ranged ? { $and: [maintenanceScope(req), range] } : maintenanceScope(req);
-        const list = await Maintenance.find(filter).sort({ date: -1, createdAt: -1 }).limit(ranged ? 5000 : 500);
-        res.json(list);
+        await respondList(req, res, Maintenance, filter, { date: -1, createdAt: -1, _id: -1 }, ranged ? 5000 : 500);
     } catch (err) {
         logError('Fleet get maintenance error:', err);
         res.status(500).json({ error: 'የጥገና ምዝገባ ማምጣት አልተቻለም' });
@@ -2150,8 +2168,7 @@ app.get('/api/fleet/allowance', requireAuth, requireModule('fleet_allowance', 'f
         const range = dateRangeFilter(req.query, 'fromDate');
         const ranged = Object.keys(range).length > 0;
         const filter = ranged ? { $and: [allowanceScope(req), range] } : allowanceScope(req);
-        const list = await Allowance.find(filter).sort({ requestDate: -1, createdAt: -1 }).limit(ranged ? 5000 : 500);
-        res.json(list);
+        await respondList(req, res, Allowance, filter, { requestDate: -1, createdAt: -1, _id: -1 }, ranged ? 5000 : 500);
     } catch (err) {
         logError('Fleet get allowance error:', err);
         res.status(500).json({ error: 'የአበል ጥያቄዎችን ማምጣት አልተቻለም' });
@@ -2296,8 +2313,7 @@ app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel', 'fleet_
     try {
         const range = dateRangeFilter(req.query, 'date');
         const ranged = Object.keys(range).length > 0;
-        const list = await FuelLog.find({ ...fleetScope(req), ...range }).sort({ date: -1, createdAt: -1 }).limit(ranged ? 5000 : 500);
-        res.json(list);
+        await respondList(req, res, FuelLog, { ...fleetScope(req), ...range }, { date: -1, createdAt: -1, _id: -1 }, ranged ? 5000 : 500);
     } catch (err) {
         logError('Fleet get fuel logs error:', err);
         res.status(500).json({ error: 'የነዳጅ ምዝገባ ማምጣት አልተቻለም' });
