@@ -778,6 +778,7 @@
                             <tbody id="trip-data-list"></tbody>
                         </table>
                     </div>
+                    <div id="trip-more-box" class="no-print" style="text-align:center; margin:14px 0;"></div>
                 </section>
             </div>
 
@@ -861,6 +862,7 @@
                             <tbody id="maint-data-list"></tbody>
                         </table>
                     </div>
+                    <div id="maint-more-box" class="no-print" style="text-align:center; margin:14px 0;"></div>
                 </section>
             </div>
 
@@ -942,6 +944,7 @@
                             <tbody id="fuel-data-list"></tbody>
                         </table>
                     </div>
+                    <div id="fuel-more-box" class="no-print" style="text-align:center; margin:14px 0;"></div>
                 </section>
             </div>
 
@@ -1071,8 +1074,8 @@
                                 <input type="text" inputmode="decimal" id="alw-cost-fuel" oninput="formatAmountInput(this); updateAllowanceTotals()">
                             </div>
                             <div style="flex: 1; min-width: 160px;">
-                                <label>ለአበል፡ <small style="color:#a0aec0;">(የቀን አበል × ቀናት በራስ ይሞላል፤ ማስተካከል ይቻላል)</small></label>
-                                <input type="text" inputmode="decimal" id="alw-cost-allowance" oninput="formatAmountInput(this); this.dataset.manual = '1'; updateAllowanceTotals()">
+                                <label>ለአበል፡ <small style="color:#a0aec0;">(የቀን አበል × ቀናት፤ በራስ ይሰላል)</small></label>
+                                <input type="text" id="alw-cost-allowance" readonly>
                             </div>
                             <div style="flex: 1; min-width: 160px;">
                                 <label>ለትራንስፖርት፡</label>
@@ -1114,6 +1117,7 @@
                             <tbody id="alw-data-list"></tbody>
                         </table>
                     </div>
+                    <div id="alw-more-box" class="no-print" style="text-align:center; margin:14px 0;"></div>
                 </section>
             </div>
 

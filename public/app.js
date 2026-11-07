@@ -2161,17 +2161,55 @@ function updateTripEstimate() {
     preview.textContent = `የተጓዘው ኪ.ሜ፡ ${distance.toLocaleString('en-US')} | የነዳጅ ወጪ ግምት፡ ${cost.toLocaleString('en-US')} ብር`;
 }
 
-async function fetchTripLogs() {
+// ---------- Long lists: show a page at a time, "ተጨማሪ አሳይ" adds the next page ----------
+const FLEET_PAGE_SIZE = 20;
+
+// Loads one page. append=false reloads from the top but keeps as many rows as are
+// already on screen (at least one page), so a save/delete doesn't collapse the list.
+async function fleetLoadPage(url, shownCount, append) {
+    const skip = append ? shownCount : 0;
+    const limit = append ? FLEET_PAGE_SIZE : Math.max(shownCount, FLEET_PAGE_SIZE);
+    const res = await authFetch(`${url}?skip=${skip}&limit=${limit}`);
+    const data = await res.json();
+    if (!res.ok) return null;
+    const items = Array.isArray(data) ? data : [];
+    const header = res.headers && typeof res.headers.get === 'function' ? res.headers.get('X-Total-Count') : null;
+    // No count header = a server that does not page (everything came back): show it all.
+    const total = (header !== null && header !== '' && !isNaN(Number(header))) ? Number(header) : skip + items.length;
+    return { items, total };
+}
+function fleetMergeUnique(existing, more) {
+    const seen = new Set(existing.map(x => x._id));
+    return existing.concat(more.filter(x => !seen.has(x._id)));
+}
+function renderMoreBox(boxId, shown, total, onclickName) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    if (total <= FLEET_PAGE_SIZE && shown >= total) { box.innerHTML = ''; return; }
+    const note = `<span style="color:#a0aec0; font-size:13px; margin:0 10px;">${shown} ከ ${total} ታይተዋል</span>`;
+    box.innerHTML = shown < total
+        ? `${note}<button type="button" class="btn-submit" onclick="${onclickName}()"><i class="fas fa-chevron-down"></i> ተጨማሪ አሳይ</button>`
+        : `${note}`;
+}
+
+let tripsTotal = 0, maintTotal = 0, fuelTotal = 0, allowanceTotal = 0;
+
+async function fetchTripLogs(append) {
     try {
-        const res = await authFetch('/api/fleet/trips');
-        fleetTrips = await res.json();
+        const page = await fleetLoadPage('/api/fleet/trips', fleetTrips.length, append);
+        if (!page) return;
+        fleetTrips = append ? fleetMergeUnique(fleetTrips, page.items) : page.items;
+        tripsTotal = page.total;
         renderTripList();
     } catch (err) {
         console.log('የአጠቃቀም ምዝገባ ማምጣት አልተቻለም');
     }
 }
 
+function loadMoreTrips() { fetchTripLogs(true); }
+
 function renderTripList() {
+    renderMoreBox('trip-more-box', fleetTrips.length, tripsTotal, 'loadMoreTrips');
     const tbody = document.getElementById('trip-data-list');
     if (!tbody) return;
     if (!fleetTrips.length) {
@@ -2295,10 +2333,12 @@ function populateMaintenanceVehicleSelects() {
     if (fuelSelect) fuelSelect.innerHTML = options;
 }
 
-async function fetchMaintenanceList() {
+async function fetchMaintenanceList(append) {
     try {
-        const res = await authFetch('/api/fleet/maintenance');
-        fleetMaintenance = await res.json();
+        const page = await fleetLoadPage('/api/fleet/maintenance', fleetMaintenance.length, append);
+        if (!page) return;
+        fleetMaintenance = append ? fleetMergeUnique(fleetMaintenance, page.items) : page.items;
+        maintTotal = page.total;
         renderMaintenanceList();
     } catch (err) {
         console.log('የጥገና ምዝገባ ማምጣት አልተቻለም');
@@ -2341,7 +2381,10 @@ function canEditMaintenance(item) {
     return item.userId === currentUser.id && !(item.approvedBy && item.approvedBy.userId);
 }
 
+function loadMoreMaintenance() { fetchMaintenanceList(true); }
+
 function renderMaintenanceList() {
+    renderMoreBox('maint-more-box', fleetMaintenance.length, maintTotal, 'loadMoreMaintenance');
     const tbody = document.getElementById('maint-data-list');
     if (!tbody) return;
     if (!fleetMaintenance.length) {
@@ -2455,17 +2498,22 @@ async function deleteMaintenance(id) {
 // ---------- Fuel Log (actual receipts, no approval) ----------
 let fleetFuelLogs = [];
 
-async function fetchFuelLogs() {
+async function fetchFuelLogs(append) {
     try {
-        const res = await authFetch('/api/fleet/fuel-logs');
-        fleetFuelLogs = await res.json();
+        const page = await fleetLoadPage('/api/fleet/fuel-logs', fleetFuelLogs.length, append);
+        if (!page) return;
+        fleetFuelLogs = append ? fleetMergeUnique(fleetFuelLogs, page.items) : page.items;
+        fuelTotal = page.total;
         renderFuelLogList();
     } catch (err) {
         console.log('የነዳጅ ምዝገባ ማምጣት አልተቻለም');
     }
 }
 
+function loadMoreFuelLogs() { fetchFuelLogs(true); }
+
 function renderFuelLogList() {
+    renderMoreBox('fuel-more-box', fleetFuelLogs.length, fuelTotal, 'loadMoreFuelLogs');
     const tbody = document.getElementById('fuel-data-list');
     if (!tbody) return;
     if (!fleetFuelLogs.length) {
@@ -3653,12 +3701,12 @@ const ALLOWANCE_FORM_TEXT = {
 let fleetAllowances = [];
 let allowanceEditId = null;
 
-async function fetchAllowances() {
+async function fetchAllowances(append) {
     try {
-        const res = await authFetch('/api/fleet/allowance');
-        const data = await res.json();
-        if (!res.ok) return;
-        fleetAllowances = Array.isArray(data) ? data : [];
+        const page = await fleetLoadPage('/api/fleet/allowance', fleetAllowances.length, append);
+        if (!page) return;
+        fleetAllowances = append ? fleetMergeUnique(fleetAllowances, page.items) : page.items;
+        allowanceTotal = page.total;
         renderAllowanceList();
     } catch (err) {
         console.log('የአበል ጥያቄዎችን ማምጣት አልተቻለም');
@@ -3732,7 +3780,10 @@ function allowanceSignCellHtml(item, slot) {
     return note('ገና አልተላከም');
 }
 
+function loadMoreAllowances() { fetchAllowances(true); }
+
 function renderAllowanceList() {
+    renderMoreBox('alw-more-box', fleetAllowances.length, allowanceTotal, 'loadMoreAllowances');
     const tbody = document.getElementById('alw-data-list');
     if (!tbody) return;
     if (!fleetAllowances.length) {
