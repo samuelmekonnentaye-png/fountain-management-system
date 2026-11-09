@@ -3445,7 +3445,7 @@ function buildFleetFinanceWorkbook(data, logo) {
     // 1) summary
     section('ማጠቃለያ');
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'የወጪ አይነት', 'መጠን (ብር)'], [
-        [1, 'የነዳጅ ግዢ (በደረሰኝ)', m.fuelCost],
+        [1, 'የነዳጅ ግዢ ', m.fuelCost],
         [2, 'የጥገና ወጪ', m.maintCost],
         [3, 'አበል እና ትራንስፖርት', m.allowanceCost]
     ], [{}, { align: 'left' }, { fmt: MONEY, align: 'right' }], { labelCol: 2, label: 'ጠቅላላ ወጪ', cols: [3] });
