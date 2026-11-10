@@ -1,3 +1,0 @@
-Put your company logo in this folder, named:  logo.png   (or logo.svg / logo.webp / logo.jpg)
-The system shows it automatically in the sidebar, on the sign-in page and as the browser icon.
-Recommended: a transparent PNG or an SVG, at least 256 px high.
