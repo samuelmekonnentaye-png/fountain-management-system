@@ -1,0 +1,12 @@
+{
+  "name": "Fountain International Trading PLC",
+  "short_name": "Fountain PLC",
+  "start_url": "login.html",
+  "display": "standalone",
+  "background_color": "#0d233a",
+  "theme_color": "#0d233a",
+  "icons": [
+    { "src": "images/logo.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "images/logo.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
