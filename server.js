@@ -2496,6 +2496,60 @@ async function initAdmin() {
 }
 initAdmin();
 
+// ===== ሙሉ Backup / Restore (ምዝገባ + ፍሊት ሁሉም) =====
+const BACKUP_MODELS = {
+    records: Record,
+    recordHistory: RecordHistory,
+    vehicles: Vehicle,
+    fleetSettings: FleetSettings,
+    trips: Trip,
+    maintenance: Maintenance,
+    fuelLogs: FuelLog,
+    allowances: Allowance
+};
+
+app.get('/api/backup', requireAdmin, async (req, res) => {
+    try {
+        const collections = {};
+        const counts = {};
+        for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
+            collections[key] = await Model.find({}).lean();
+            counts[key] = collections[key].length;
+        }
+        res.json({
+            app: 'fountain-management-system',
+            version: 2,
+            createdAt: new Date().toISOString(),
+            counts,
+            collections
+        });
+    } catch (err) {
+        logError('Backup error:', err);
+        res.status(500).json({ error: 'Backup ማድረግ አልተቻለም' });
+    }
+});
+
+app.post('/api/backup/restore', requireAdmin, async (req, res) => {
+    try {
+        const cols = req.body && req.body.collections;
+        if (!cols || typeof cols !== 'object') {
+            return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
+        }
+        const counts = {};
+        for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
+            if (!Array.isArray(cols[key])) continue; // በፋይሉ ውስጥ ከሌለ አይነካም
+            const docs = cols[key].map(r => { const c = { ...r }; delete c.__v; return c; });
+            await Model.deleteMany({});
+            if (docs.length > 0) await Model.insertMany(docs, { ordered: false });
+            counts[key] = docs.length;
+        }
+        res.json({ message: 'መረጃዎቹ ወደ ዳታቤዝ ተመልሰዋል!', counts });
+    } catch (err) {
+        logError('Restore error:', err);
+        res.status(500).json({ error: 'Restore ማድረግ አልተቻለም' });
+    }
+});
+
 // Catches multer errors (file too large, wrong file type) so they return a
 // clean Amharic message instead of a raw stack trace / hung request.
 app.use((err, req, res, next) => {

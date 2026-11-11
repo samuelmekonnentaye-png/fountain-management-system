@@ -1719,45 +1719,54 @@ async function changePassword(e) {
     } catch (err) {}
 }
 
-function backupData() {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(records));
-    let dl = document.createElement('a');
-    dl.setAttribute("href", dataStr);
-    dl.setAttribute("download", `backup_${new Date().toISOString().split('T')[0]}.json`);
-    document.body.appendChild(dl); dl.click(); dl.remove();
+async function backupData() {
+    try {
+        const res = await authFetch('/api/backup');
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || "Backup ማድረግ አልተቻለም"); return; }
+        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const dl = document.createElement('a');
+        dl.href = url;
+        dl.download = `backup_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(dl); dl.click(); dl.remove();
+        URL.revokeObjectURL(url);
+        alert("Backup ወርዷል፦\n" + Object.entries(data.counts).map(([k, v]) => `${k}: ${v}`).join("\n"));
+    } catch (err) {
+        alert("Backup ማድረግ አልተቻለም");
+    }
 }
 
-// Restoring a backup now actually writes the records back into the
-// database (via /api/records/restore) instead of only updating the
-// in-memory `records` array — that in-memory-only approach is exactly why
-// a restored backup used to vanish again on the next page refresh.
 async function restoreData(event) {
     let file = event.target.files[0];
     if (!file) { return; }
-
     let reader = new FileReader();
-    reader.onload = async function(e) {
+    reader.onload = async function (e) {
         try {
             let parsed = JSON.parse(e.target.result);
-            if (!Array.isArray(parsed)) {
+            let url, body, summary;
+            if (Array.isArray(parsed)) {                       // የድሮ ፋይል (ምዝገባ ብቻ)
+                url = '/api/records/restore';
+                body = { records: parsed };
+                summary = `${parsed.length} መዝገቦች`;
+            } else if (parsed && parsed.collections) {         // አዲስ ሙሉ Backup
+                url = '/api/backup/restore';
+                body = { collections: parsed.collections };
+                summary = Object.entries(parsed.counts || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+            } else {
                 alert("ይህ የ Backup ፋይል ትክክለኛ አይደለም።");
                 return;
             }
-            if (!confirm(`ይህ አሁን ያለውን ውሂብ ሁሉ በዚህ Backup ፋይል ውስጥ ባሉት ${parsed.length} መዝገቦች ይተካዋል። ይህ የማይቀለበስ ነው። እርግጠኛ ነዎት?`)) {
-                event.target.value = '';
-                return;
-            }
-
-            let res = await authFetch('/api/records/restore', {
+            if (!confirm(`ይህ አሁን ያለውን ውሂብ በዚህ Backup ይተካዋል (${summary})። ይህ የማይቀለበስ ነው። እርግጠኛ ነዎት?`)) { return; }
+            let res = await authFetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ records: parsed })
+                body: JSON.stringify(body)
             });
             let data = await res.json();
-
             if (res.ok) {
-                await fetchRecords(); // reload from the database, not just from memory
-                alert(`መረጃዎቹ በትክክል ወደ ዳታቤዝ ተመልሰዋል! (${data.count} መዝገቦች) — ገጹን ሪፍሬሽ ቢያደርጉም አይጠፉም።`);
+                alert(data.message || "ተመልሷል");
+                location.reload();
             } else {
                 alert(data.error || "Restore ማድረግ አልተቻለም");
             }
