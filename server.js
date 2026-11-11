@@ -2309,6 +2309,66 @@ app.post('/api/fleet/allowance/:id/sign', requireAuth, requireModule('fleet_allo
     }
 });
 
+// ---------- Dashboard analytics (summed up on the server) ----------
+// One call returns everything the dashboard's fleet section draws, already
+// totalled per day / vehicle / department, so the browser never has to download
+// thousands of rows. The same "who sees what" rules apply as everywhere else in
+// the fleet module: your own entries, unless you are an Admin or were given
+// 'see others' fleet entries'.
+app.get('/api/fleet/dashboard', requireAuth, requireModule('fleet_finance'), async (req, res) => {
+    try {
+        const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+        const todayIso = new Date().toISOString().slice(0, 10);
+        let to = isoRe.test(req.query.to || '') ? req.query.to : todayIso;
+        let from = isoRe.test(req.query.from || '') ? req.query.from : null;
+        const maxSpanMs = 400 * 86400000;
+        const toMs = Date.parse(to + 'T00:00:00Z');
+        if (!from || toMs - Date.parse(from + 'T00:00:00Z') > maxSpanMs) from = new Date(toMs - 183 * 86400000).toISOString().slice(0, 10);
+        if (to < from) return res.status(400).json({ error: '"እስከ" ቀን ከ"ከ" ቀን ያንሳል' });
+
+        const scope = fleetScope(req);
+        const mScope = maintenanceScope(req);
+        const aScope = allowanceScope(req);
+        const within = field => ({ [field]: { $gte: from, $lte: to } });
+        const total = field => ({ $sum: '$' + field });
+        const byVehicle = { plate: '$vehiclePlate', type: '$vehicleType' };
+
+        const unsigned = who => ({ $or: [{ [who + '.userId']: { $exists: false } }, { [who + '.userId']: null }] });
+        const signed = who => ({ [who + '.userId']: { $exists: true, $nin: [null, ''] } });
+
+        const [fuelDaily, fuelVehicle, maintDaily, maintVehicle, allowanceDaily, tripDaily, tripVehicle, tripDept,
+            vehicles, serviceDue, pendingMaintenance, pendingAllowance] = await Promise.all([
+            FuelLog.aggregate([{ $match: { ...scope, ...within('date') } }, { $group: { _id: '$date', cost: total('cost'), liters: total('liters'), count: { $sum: 1 } } }]),
+            FuelLog.aggregate([{ $match: { ...scope, ...within('date') } }, { $group: { _id: byVehicle, cost: total('cost'), liters: total('liters') } }]),
+            Maintenance.aggregate([{ $match: { $and: [mScope, within('date')] } }, { $group: { _id: '$date', cost: total('cost'), count: { $sum: 1 } } }]),
+            Maintenance.aggregate([{ $match: { $and: [mScope, within('date')] } }, { $group: { _id: byVehicle, cost: total('cost') } }]),
+            Allowance.aggregate([{ $match: { $and: [aScope, within('fromDate')] } }, { $group: { _id: '$fromDate', allowance: total('costAllowance'), transport: total('costTransport'), count: { $sum: 1 } } }]),
+            Trip.aggregate([{ $match: { ...scope, ...within('tripDate') } }, { $group: { _id: '$tripDate', km: total('distanceKm'), est: total('estimatedFuelCost'), count: { $sum: 1 } } }]),
+            Trip.aggregate([{ $match: { ...scope, ...within('tripDate') } }, { $group: { _id: byVehicle, km: total('distanceKm'), est: total('estimatedFuelCost'), count: { $sum: 1 } } }]),
+            Trip.aggregate([{ $match: { ...scope, ...within('tripDate') } }, { $group: { _id: '$department', km: total('distanceKm'), est: total('estimatedFuelCost'), count: { $sum: 1 } } }]),
+            Vehicle.find({ isDeleted: { $ne: true } }, 'plateNumber vehicleType status currentKm documents'),
+            // Vehicle-level reminder data (no money): the latest maintenance entry of each vehicle that set a next service.
+            Maintenance.aggregate([
+                { $match: { $or: [{ nextServiceDate: { $nin: ['', null] } }, { nextServiceKm: { $ne: null } }] } },
+                { $sort: { date: -1, createdAt: -1 } },
+                { $group: { _id: '$vehicleId', plate: { $first: '$vehiclePlate' }, type: { $first: '$vehicleType' }, nextServiceDate: { $first: '$nextServiceDate' }, nextServiceKm: { $first: '$nextServiceKm' }, lastDate: { $first: '$date' } } }
+            ]),
+            Maintenance.countDocuments({ $and: [mScope, signed('preparedBy'), unsigned('approvedBy')] }),
+            Allowance.countDocuments({ $and: [aScope, signed('requester'), unsigned('approver')] })
+        ]);
+
+        res.json({
+            from, to,
+            scope: canViewAllFleet(req) ? 'all' : 'own',
+            fuelDaily, fuelVehicle, maintDaily, maintVehicle, allowanceDaily, tripDaily, tripVehicle, tripDept,
+            vehicles, serviceDue, pendingMaintenance, pendingAllowance
+        });
+    } catch (err) {
+        logError('Fleet dashboard error:', err);
+        res.status(500).json({ error: 'የዳሽቦርድ መረጃ ማምጣት አልተቻለም' });
+    }
+});
+
 app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel', 'fleet_finance'), async (req, res) => {
     try {
         const range = dateRangeFilter(req.query, 'date');
