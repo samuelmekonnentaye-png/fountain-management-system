@@ -156,7 +156,7 @@ async function fetchUsersList() {
         let usersTable = document.getElementById('all-users-list');
         if (usersTable) {
             usersTable.innerHTML = '';
-            users.forEach(u => {
+            usersCache.slice(0, listLimit('users')).forEach(u => {
                 let statusBadge = u.status === 'approved' 
                     ? '<span style="color:green; font-weight:bold;">የጸደቀ (Approved)</span>' 
                     : '<span style="color:orange; font-weight:bold;">በምጠባበቅ ላይ (Pending)</span>';
@@ -196,6 +196,7 @@ async function fetchUsersList() {
                     </tr>
                 `;
             });
+            listMoreBar('users-more-box', 'users', usersCache.length);
         }
     } catch (err) {}
 }
@@ -347,7 +348,7 @@ function showSection(sectionId, menuId) {
     if (sectionId === 'fleet-allowance-sec') initAllowanceSection();
     // Chart.js needs a visible (non-zero-size) canvas to size itself
     // correctly, so redraw the dashboard charts right after it becomes visible.
-    if (sectionId === 'dashboard-sec') renderDashboardCharts();
+    if (sectionId === 'dashboard-sec') { renderDashboardCharts(); loadFleetDashboard(true); }
 }
 
 // Dashboard summary cards (🔴 overdue / 🟡 due this month) are clickable:
@@ -528,10 +529,22 @@ async function fetchTrash() {
         let items = await res.json();
         if (!items.length) {
             list.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#a0aec0;">ትራሹ ባዶ ነው</td></tr>`;
+            trashItems = [];
+            listMoreBar('trash-more-box', 'trash', 0);
             return;
         }
-        let isAdmin = currentUser && currentUser.role === 'Admin';
-        list.innerHTML = items.map(item => `
+        trashItems = items;
+        renderTrashList();
+    } catch (err) {
+        list.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#feb2b2;">ትራሽን ማምጣት አልተቻለም</td></tr>`;
+    }
+}
+let trashItems = [];
+function renderTrashList() {
+    const list = document.getElementById('trash-data-list');
+    if (!list) return;
+    const isAdmin = currentUser && currentUser.role === 'Admin';
+    list.innerHTML = trashItems.slice(0, listLimit('trash')).map(item => `
             <tr>
                 <td><strong>[${fleetEsc(item.category)}]</strong> ${fleetEsc(item.name)}</td>
                 <td>${Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} ብር</td>
@@ -543,9 +556,7 @@ async function fetchTrash() {
                 </td>
             </tr>
         `).join('');
-    } catch (err) {
-        list.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#feb2b2;">ትራሽን ማምጣት አልተቻለም</td></tr>`;
-    }
+    listMoreBar('trash-more-box', 'trash', trashItems.length);
 }
 async function restoreFromTrash(id) {
     try {
@@ -572,48 +583,57 @@ async function permanentlyDeleteFromTrash(id) {
     } catch (err) {}
 }
 
-// ===== Pagination (dashboard / payments / contracts lists) =====
-// Each of the three main record tables keeps its own current page and shows
-// RECORDS_PER_PAGE rows at a time — long lists no longer render (and scroll)
-// as one giant table.
-const RECORDS_PER_PAGE = 10;
+// ===== Long lists: show a page at a time, "ተጨማሪ አሳይ" adds the next page =====
+// One look for every list in the system. The dashboard / payments / contracts
+// tables keep their own count in pageState (1 = the first 20 rows, 2 = 40 ...);
+// setting it back to 1 (search / filter) starts again from the top.
+const LIST_PAGE_SIZE = 20;
+const RECORDS_PER_PAGE = LIST_PAGE_SIZE;
 let pageState = { dash: 1, pay: 1, con: 1 };
 function resetDashPage() { pageState.dash = 1; renderAllData(); }
-function goToPage(key, page) {
-    pageState[key] = page;
-    renderAllData();
-    let tbody = document.getElementById(key === 'dash' ? 'dash-data-list' : key === 'pay' ? 'pay-data-list' : 'con-data-list');
-    if (tbody) tbody.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+function showMoreRecords(key) { pageState[key] = (pageState[key] || 1) + 1; renderAllData(); }
+
+// "20 ከ 134 ታይተዋል [ተጨማሪ አሳይ]" — empty when everything fits on one screen.
+function moreBarHtml(onclickCall, shown, total) {
+    if (total <= LIST_PAGE_SIZE && shown >= total) return '';
+    const note = `<span style="color:#a0aec0; font-size:13px; margin:0 10px;">${shown} ከ ${total} ታይተዋል</span>`;
+    return `<div class="no-print" style="text-align:center; margin:14px 0;">${note}${shown < total
+        ? `<button type="button" class="btn-submit" onclick="${onclickCall}"><i class="fas fa-chevron-down"></i> ተጨማሪ አሳይ</button>` : ''}</div>`;
 }
-function paginationBarHtml(key, page, totalPages, totalItems) {
-    if (totalItems === 0) return '';
-    return `
-        <div class="pagination-bar no-print">
-            <span class="pagination-info">ጠቅላላ ${totalItems} ውጤቶች — ገጽ ${page} ከ ${totalPages}</span>
-            <div class="pagination-controls">
-                <button type="button" class="pagination-btn" ${page <= 1 ? 'disabled' : ''} onclick="goToPage('${key}', ${page - 1})">‹ ቀዳሚ</button>
-                <button type="button" class="pagination-btn" ${page >= totalPages ? 'disabled' : ''} onclick="goToPage('${key}', ${page + 1})">ቀጣይ ›</button>
-            </div>
-        </div>
-    `;
-}
-// Slices `rows` (an array of <tr> HTML strings) to the current page for
-// `key`, writes them into `tbodyId`, and renders the pager into `pagId`.
+
+// Writes the first pageState[key] x 20 rows (an array of <tr> HTML strings)
+// into `tbodyId` and the "more" bar into `pagId`.
 function renderPage(key, tbodyId, pagId, rows, emptyColspan) {
     let tbody = document.getElementById(tbodyId);
     if (!tbody) return;
-    let totalPages = Math.max(1, Math.ceil(rows.length / RECORDS_PER_PAGE));
-    if (pageState[key] > totalPages) pageState[key] = totalPages;
-    if (pageState[key] < 1) pageState[key] = 1;
-    let page = pageState[key];
-    let start = (page - 1) * RECORDS_PER_PAGE;
-    let pageRows = rows.slice(start, start + RECORDS_PER_PAGE);
-    tbody.innerHTML = pageRows.length
-        ? pageRows.join('')
+    let shown = Math.min(rows.length, Math.max(1, pageState[key] || 1) * RECORDS_PER_PAGE);
+    tbody.innerHTML = rows.length
+        ? rows.slice(0, shown).join('')
         : `<tr><td colspan="${emptyColspan}" style="text-align:center; padding:20px; color:#a0aec0;">ምንም መረጃ አልተገኘም</td></tr>`;
-
     let pagEl = document.getElementById(pagId);
-    if (pagEl) pagEl.innerHTML = paginationBarHtml(key, page, totalPages, rows.length);
+    if (pagEl) pagEl.innerHTML = moreBarHtml(`showMoreRecords('${key}')`, shown, rows.length);
+}
+
+// Lists that are already fully loaded in the page (gallery, trash, vehicles,
+// users ...) only slice what they draw; listMore() draws the next slice.
+const listShown = {};
+const listRenderers = {};
+function listLimit(key) { return listShown[key] || LIST_PAGE_SIZE; }
+function listMore(key) {
+    listShown[key] = listLimit(key) + LIST_PAGE_SIZE;
+    if (listRenderers[key]) listRenderers[key]();
+}
+function listMoreBar(boxId, key, total) {
+    const box = document.getElementById(boxId);
+    if (box) box.innerHTML = moreBarHtml(`listMore('${key}')`, Math.min(total, listLimit(key)), total);
+}
+
+let galleryCards = [];
+function renderGallery() {
+    const gallery = document.getElementById('contracts-gallery');
+    if (!gallery) return;
+    gallery.innerHTML = galleryCards.slice(0, listLimit('gal')).join('');
+    listMoreBar('gallery-more-box', 'gal', galleryCards.length);
 }
 
 function renderAllData() {
@@ -631,6 +651,7 @@ function renderAllData() {
     let dashRows = [];
     let payRows = [];
     let conRows = [];
+    galleryCards = [];
     if (gallery) gallery.innerHTML = '';
     if (reportList) reportList.innerHTML = '';
 
@@ -745,10 +766,12 @@ function renderAllData() {
         if (item.category === 'ውል') {
             conRows.push(makeRow(false));
             if (gallery && item.file) {
-                gallery.innerHTML += `<div style="border:1px solid rgba(255,255,255,0.1); padding:10px; border-radius:8px; width:180px; text-align:center; background:rgba(255,255,255,0.05);"><img src="${item.file}" style="width:100%; height:140px; object-fit:cover; cursor:pointer;" onclick="previewImage('${item.file}')"><p style="font-size:12px; margin-top:5px; color:#fff;">${fleetEsc(item.name)}</p></div>`;
+                galleryCards.push(`<div style="border:1px solid rgba(255,255,255,0.1); padding:10px; border-radius:8px; width:180px; text-align:center; background:rgba(255,255,255,0.05);"><img src="${item.file}" style="width:100%; height:140px; object-fit:cover; cursor:pointer;" onclick="previewImage('${item.file}')"><p style="font-size:12px; margin-top:5px; color:#fff;">${fleetEsc(item.name)}</p></div>`);
             }
         }
     });
+
+    renderGallery();
 
     let overdueEl = document.getElementById('overdue-count');
     let dueEl = document.getElementById('due-count');
@@ -1925,10 +1948,12 @@ function renderVehicleList() {
     if (!tbody) return;
     if (!fleetVehicles.length) {
         tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#a0aec0;">ምንም ተሽከርካሪ አልተመዘገበም</td></tr>`;
+        listMoreBar('veh-more-box', 'veh', 0);
         return;
     }
     const statusLabels = { active: '🟢 አገልግሎት ላይ', maintenance: '🟡 ጥገና ላይ', out_of_service: '🔴 ከአገልግሎት ውጪ' };
-    tbody.innerHTML = fleetVehicles.map(v => {
+    // Only the drawing is paged; the full list stays in fleetVehicles for the drop-downs.
+    tbody.innerHTML = fleetVehicles.slice(0, listLimit('veh')).map(v => {
         const docStatus = getVehicleDocStatus(v);
         return `
             <tr>
@@ -1944,6 +1969,7 @@ function renderVehicleList() {
                 </td>
             </tr>`;
     }).join('');
+    listMoreBar('veh-more-box', 'veh', fleetVehicles.length);
 }
 
 function resetVehicleForm() {
@@ -2026,6 +2052,18 @@ async function deleteVehicle(id) {
 }
 
 let vehicleTrashOpen = false;
+let vehicleTrashItems = [];
+function renderVehicleTrashList() {
+    const box = document.getElementById('fleet-vehicle-trash-list');
+    if (!box) return;
+    const list = vehicleTrashItems;
+    if (!list.length) { box.innerHTML = '<p style="color:#a0aec0;">ትራሹ ባዶ ነው</p>'; return; }
+    const shown = list.slice(0, listLimit('vtrash'));
+    box.innerHTML = `<table class="data-table"><thead><tr><th>ሰሌዳ ቁጥር</th><th>አይነት</th><th>የተሰረዘበት ጊዜ</th><th>እርምጃ</th></tr></thead><tbody>
+        ${shown.map(v => `<tr><td>${fleetEsc(v.plateNumber)}</td><td>${fleetEsc(v.vehicleType)}</td><td>${v.deletedAt ? new Date(v.deletedAt).toLocaleDateString('en-GB') : '-'}</td>
+            <td><button onclick="restoreVehicle('${v._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px;"><i class="fas fa-undo"></i> መልስ</button></td></tr>`).join('')}
+        </tbody></table>${moreBarHtml("listMore('vtrash')", shown.length, list.length)}`;
+}
 async function toggleVehicleTrash() {
     const box = document.getElementById('fleet-vehicle-trash-list');
     vehicleTrashOpen = !vehicleTrashOpen;
@@ -2035,11 +2073,8 @@ async function toggleVehicleTrash() {
     try {
         const res = await authFetch('/api/fleet/vehicles/trash/list');
         const list = await res.json();
-        if (!list.length) { box.innerHTML = '<p style="color:#a0aec0;">ትራሹ ባዶ ነው</p>'; return; }
-        box.innerHTML = `<table class="data-table"><thead><tr><th>ሰሌዳ ቁጥር</th><th>አይነት</th><th>የተሰረዘበት ጊዜ</th><th>እርምጃ</th></tr></thead><tbody>
-            ${list.map(v => `<tr><td>${fleetEsc(v.plateNumber)}</td><td>${fleetEsc(v.vehicleType)}</td><td>${v.deletedAt ? new Date(v.deletedAt).toLocaleDateString('en-GB') : '-'}</td>
-                <td><button onclick="restoreVehicle('${v._id}')" class="btn-submit" style="padding:4px 8px; font-size:12px;"><i class="fas fa-undo"></i> መልስ</button></td></tr>`).join('')}
-            </tbody></table>`;
+        vehicleTrashItems = list;
+        renderVehicleTrashList();
     } catch (err) {
         box.innerHTML = '<p style="color:#e53e3e;">ማምጣት አልተቻለም</p>';
     }
@@ -2162,7 +2197,7 @@ function updateTripEstimate() {
 }
 
 // ---------- Long lists: show a page at a time, "ተጨማሪ አሳይ" adds the next page ----------
-const FLEET_PAGE_SIZE = 20;
+const FLEET_PAGE_SIZE = LIST_PAGE_SIZE;
 
 // Loads one page. append=false reloads from the top but keeps as many rows as are
 // already on screen (at least one page), so a save/delete doesn't collapse the list.
@@ -2184,12 +2219,7 @@ function fleetMergeUnique(existing, more) {
 }
 function renderMoreBox(boxId, shown, total, onclickName) {
     const box = document.getElementById(boxId);
-    if (!box) return;
-    if (total <= FLEET_PAGE_SIZE && shown >= total) { box.innerHTML = ''; return; }
-    const note = `<span style="color:#a0aec0; font-size:13px; margin:0 10px;">${shown} ከ ${total} ታይተዋል</span>`;
-    box.innerHTML = shown < total
-        ? `${note}<button type="button" class="btn-submit" onclick="${onclickName}()"><i class="fas fa-chevron-down"></i> ተጨማሪ አሳይ</button>`
-        : `${note}`;
+    if (box) box.innerHTML = moreBarHtml(`${onclickName}()`, shown, total);
 }
 
 let tripsTotal = 0, maintTotal = 0, fuelTotal = 0, allowanceTotal = 0;
@@ -3078,6 +3108,7 @@ function applyMyAccess() {
     const anyFleet = ACCESS_MODULES.some(m => m.group === 'fleet' && m.menu && canUseModule(m.key));
     const fleetLabel = document.getElementById('menu-fleet-label');
     if (fleetLabel) fleetLabel.style.display = anyFleet ? '' : 'none';
+    loadFleetDashboard();
     // Today's fuel price is set by whoever registers trips / fuel, not only the Admin.
     const priceBox1 = document.getElementById('fleet-fuel-price-box');
     if (priceBox1) priceBox1.style.display = canUseModule('fleet_trips') ? 'block' : 'none';
@@ -4097,3 +4128,272 @@ document.addEventListener('keydown', e => {
         else { const btn = el.form.querySelector('button[type="submit"], input[type="submit"]'); if (btn) btn.click(); }
     }
 });
+
+// "ተጨማሪ አሳይ" re-draws a list from what is already loaded.
+listRenderers.gal = renderGallery;
+listRenderers.trash = renderTrashList;
+listRenderers.veh = renderVehicleList;
+listRenderers.vtrash = renderVehicleTrashList;
+listRenderers.users = fetchUsersList;
+
+
+// =====================================================================
+// ===== Fleet analytics on the dashboard (ፍሊት ማኔጅመንት ዳሽቦርድ) =====
+// =====================================================================
+// Six months of fleet cost, distance, vehicle status and reminders, drawn as
+// cards and charts under the payments charts. The server sums everything up
+// (one call); months are Ethiopian months (ጳጉሜን is counted inside ነሐሴ so there
+// is never a nearly empty "month"). Shown to anyone who has the fleet finance
+// report, and with the same "own entries unless you may see all" rule.
+const FLEET_DASH_MONTHS = 6;
+const FLEET_DOC_WARN_DAYS = 30;
+const FLEET_SERVICE_WARN_DAYS = 30;
+const FLEET_SERVICE_WARN_KM = 500;
+const FLEET_DOC_LABELS = { libre: 'ሊብሬ', bolo: 'ቦሎ', insurance: 'መድን', competency: 'ብቃት ማረጋገጫ' };
+let fleetDashData = null;
+let fleetDashLoadedAt = 0;
+let fleetDashChartRetries = 0;
+const fleetDashCharts = {};
+let fleetDashAlertList = [];
+
+function fleetDashMonths(todayIso) {
+    const e = isoToEthParts(todayIso || dateToISO(new Date()));
+    let y = e.y, m = e.m === 13 ? 12 : e.m;
+    const list = [];
+    for (let i = 0; i < FLEET_DASH_MONTHS; i++) {
+        const lastMonth = m === 12 ? 13 : m;   // ነሐሴ runs on to the end of ጳጉሜን
+        list.unshift({
+            key: `${y}-${m}`, label: `${ETH_MONTHS[m - 1]} ${String(y).slice(-2)}`,
+            fromIso: ethPartsToIso(y, m, 1), toIso: ethPartsToIso(y, lastMonth, ethDaysInMonth(y, lastMonth)), y, m
+        });
+        m -= 1;
+        if (m < 1) { m = 12; y -= 1; }
+    }
+    return list;
+}
+function fleetDashMonthKey(iso) {
+    const e = isoToEthParts(iso);
+    return `${e.y}-${e.m === 13 ? 12 : e.m}`;
+}
+
+function fleetDashBuckets(d, months) {
+    const idx = {};
+    months.forEach((mo, i) => { idx[mo.key] = i; });
+    const mk = () => months.map(() => 0);
+    const out = { fuel: mk(), liters: mk(), maint: mk(), allowance: mk(), km: mk(), trips: mk(), est: mk() };
+    const add = (arr, rows, field) => (rows || []).forEach(r => {
+        if (!r || !r._id) return;
+        const i = idx[fleetDashMonthKey(r._id)];
+        if (i !== undefined) arr[i] += Number(r[field]) || 0;
+    });
+    add(out.fuel, d.fuelDaily, 'cost');
+    add(out.liters, d.fuelDaily, 'liters');
+    add(out.maint, d.maintDaily, 'cost');
+    add(out.allowance, d.allowanceDaily, 'allowance');
+    add(out.allowance, d.allowanceDaily, 'transport');
+    add(out.km, d.tripDaily, 'km');
+    add(out.trips, d.tripDaily, 'count');
+    add(out.est, d.tripDaily, 'est');
+    return out;
+}
+
+function fleetDashVehicles(d) {
+    const map = new Map();
+    const get = id => {
+        const key = id || {};
+        const label = `${String(key.plate || '').trim()} (${String(key.type || '').trim() || 'ያልታወቀ'})`;
+        if (!map.has(label)) map.set(label, { label, fuel: 0, maint: 0, km: 0 });
+        return map.get(label);
+    };
+    (d.fuelVehicle || []).forEach(r => { get(r._id).fuel += Number(r.cost) || 0; });
+    (d.maintVehicle || []).forEach(r => { get(r._id).maint += Number(r.cost) || 0; });
+    (d.tripVehicle || []).forEach(r => { get(r._id).km += Number(r.km) || 0; });
+    return Array.from(map.values()).map(v => ({ ...v, total: v.fuel + v.maint })).sort((a, b) => (b.total - a.total) || (b.km - a.km));
+}
+
+// Documents about to expire (or already expired) and services that are due.
+function fleetDashAlerts(d, todayIso) {
+    const base = new Date(`${todayIso}T00:00:00`);
+    const daysTo = iso => Math.round((new Date(`${iso}T00:00:00`) - base) / 86400000);
+    const alerts = [];
+    const carKm = {};
+    (d.vehicles || []).forEach(v => {
+        carKm[String(v._id)] = v.currentKm || 0;
+        const docs = v.documents || {};
+        Object.keys(FLEET_DOC_LABELS).forEach(k => {
+            const iso = docs[k] && docs[k].expiryDate;
+            if (!iso) return;
+            const n = daysTo(iso);
+            const who = `${v.plateNumber || ''}`;
+            if (n < 0) alerts.push({ sev: 0, kind: 0, order: n, text: `🔴 ${who} — ${FLEET_DOC_LABELS[k]} ካለፈ ${-n} ቀን (${isoToEthText(iso)})` });
+            else if (n <= FLEET_DOC_WARN_DAYS) alerts.push({ sev: 1, kind: 0, order: n, text: `🟡 ${who} — ${FLEET_DOC_LABELS[k]} ${n} ቀን ቀርቶታል (${isoToEthText(iso)})` });
+        });
+    });
+    (d.serviceDue || []).forEach(sv => {
+        const who = `${sv.plate || ''}`;
+        if (sv.nextServiceDate) {
+            const n = daysTo(sv.nextServiceDate);
+            if (n < 0) alerts.push({ sev: 0, kind: 1, order: n, text: `🔧🔴 ${who} — የታቀደው የአገልግሎት ቀን አልፏል (${isoToEthText(sv.nextServiceDate)})` });
+            else if (n <= FLEET_SERVICE_WARN_DAYS) alerts.push({ sev: 1, kind: 1, order: n, text: `🔧🟡 ${who} — ቀጣይ አገልግሎት በ${n} ቀን ውስጥ (${isoToEthText(sv.nextServiceDate)})` });
+        }
+        if (sv.nextServiceKm !== null && sv.nextServiceKm !== undefined && carKm[String(sv._id)] !== undefined) {
+            const left = sv.nextServiceKm - carKm[String(sv._id)];
+            if (left <= 0) alerts.push({ sev: 0, kind: 2, order: left, text: `🔧🔴 ${who} — የታቀደው የአገልግሎት ኪ.ሜ ደርሷል (${sv.nextServiceKm.toLocaleString('en-US')} ኪ.ሜ)` });
+            else if (left <= FLEET_SERVICE_WARN_KM) alerts.push({ sev: 1, kind: 2, order: left, text: `🔧🟡 ${who} — ለቀጣይ አገልግሎት ${left.toLocaleString('en-US')} ኪ.ሜ ቀርቷል` });
+        }
+    });
+    return alerts.sort((a, b) => (a.sev - b.sev) || (a.kind - b.kind) || (a.order - b.order));
+}
+
+async function loadFleetDashboard(force) {
+    const box = document.getElementById('fleet-dash');
+    if (!box) return;
+    if (!canUseModule('fleet_finance')) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    if (!force && fleetDashData && Date.now() - fleetDashLoadedAt < 20000) { renderFleetDashboard(); return; }
+    const months = fleetDashMonths();
+    try {
+        const res = await authFetch(`/api/fleet/dashboard?from=${months[0].fromIso}&to=${dateToISO(new Date())}`);
+        const data = await res.json();
+        if (!res.ok) { box.style.display = 'none'; return; }
+        fleetDashData = data;
+        fleetDashLoadedAt = Date.now();
+        renderFleetDashboard();
+    } catch (err) {
+        box.style.display = 'none';
+    }
+}
+
+function renderFleetDashboard() {
+    const dashSection = document.getElementById('dashboard-sec');
+    if (!fleetDashData || !dashSection || dashSection.style.display === 'none') return;
+    const d = fleetDashData;
+    const months = fleetDashMonths();
+    const b = fleetDashBuckets(d, months);
+    const cur = months.length - 1, prev = months.length - 2;
+    const money = n => (Math.round((n || 0) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const total = i => b.fuel[i] + b.maint[i] + b.allowance[i];
+
+    const scopeEl = document.getElementById('fleet-dash-scope');
+    if (scopeEl) scopeEl.textContent = d.scope === 'own' ? '(የእርስዎ ምዝገባዎች ብቻ)' : '';
+
+    // ----- cards -----
+    const alerts = fleetDashAlerts(d, dateToISO(new Date()));
+    fleetDashAlertList = alerts;
+    let delta = '<small style="color:#a0aec0;">ካለፈው ወር ጋር ማነጻጸሪያ የለም</small>';
+    if (total(prev) > 0) {
+        const pct = Math.round(((total(cur) - total(prev)) / total(prev)) * 100);
+        const up = pct > 0;
+        delta = `<small style="color:${up ? '#fc8181' : '#68d391'};">${up ? '▲' : (pct < 0 ? '▼' : '■')} ${Math.abs(pct)}% ከ${months[prev].label} ጋር</small>`;
+    }
+    const card = (cls, title, value, sub) => `<div class="card ${cls}"><h3>${title}</h3><p class="count">${value}</p>${sub || ''}</div>`;
+    const cards = document.getElementById('fleet-dash-cards');
+    if (cards) {
+        cards.innerHTML = [
+            card('card-blue', `ጠቅላላ ወጪ — ${months[cur].label}`, `${money(total(cur))} ብር`, delta),
+            card('card-blue', 'የነዳጅ ግዢ (ይህ ወር)', `${money(b.fuel[cur])} ብር`, `<small style="color:#a0aec0;">${money(b.liters[cur])} ሊትር</small>`),
+            card('card-blue', 'የጥገና ወጪ (ይህ ወር)', `${money(b.maint[cur])} ብር`, ''),
+            card('card-blue', 'አበል እና ትራንስፖርት (ይህ ወር)', `${money(b.allowance[cur])} ብር`, ''),
+            card('card-blue', 'የተጓዙ ኪ.ሜ (ይህ ወር)', money(b.km[cur]), `<small style="color:#a0aec0;">${money(b.trips[cur])} ጉዞ</small>`),
+            card((d.pendingMaintenance + d.pendingAllowance) > 0 ? 'card-yellow' : 'card-blue', 'ለማጽደቅ የሚጠብቁ', String((d.pendingMaintenance || 0) + (d.pendingAllowance || 0)),
+                `<small style="color:#a0aec0;">ጥገና ${d.pendingMaintenance || 0} · አበል ${d.pendingAllowance || 0}</small>`),
+            card(alerts.length ? 'card-red' : 'card-blue', 'ትኩረት የሚሹ', String(alerts.length), `<small style="color:#a0aec0;">ሰነድ እና አገልግሎት</small>`)
+        ].join('');
+    }
+
+    renderFleetDashAlerts();
+
+    // ----- charts -----
+    if (typeof Chart === 'undefined') {
+        if (fleetDashChartRetries < 15) { fleetDashChartRetries++; setTimeout(renderFleetDashboard, 400); }
+        return;
+    }
+    fleetDashChartRetries = 0;
+    const labels = months.map(m => m.label);
+    const keep = (key, canvasId, config, hasData) => {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        if (fleetDashCharts[key]) { fleetDashCharts[key].destroy(); fleetDashCharts[key] = null; }
+        const wrap = canvas.parentElement;
+        const note = wrap.querySelector('.chart-empty-note');
+        if (!hasData) {
+            if (!note) { const n = document.createElement('div'); n.className = 'chart-empty-note'; n.textContent = 'በዚህ ጊዜ ምንም መረጃ የለም'; wrap.appendChild(n); }
+            return;
+        }
+        if (note) note.remove();
+        fleetDashCharts[key] = new Chart(canvas, config);
+    };
+    const base = chartBaseOptions();
+    const legend = { display: true, position: 'bottom', labels: { color: '#cbd5e0', font: { size: 11 } } };
+    const stackedScales = horizontal => ({
+        x: { ...base.scales.x, stacked: true },
+        y: { ...base.scales.y, stacked: true, beginAtZero: true }
+    });
+    const any = arr => arr.some(v => v > 0);
+
+    keep('monthly', 'fd-monthly', {
+        type: 'bar',
+        data: { labels, datasets: [
+            { label: 'ነዳጅ', data: b.fuel, backgroundColor: '#3182ce' },
+            { label: 'ጥገና', data: b.maint, backgroundColor: '#dd6b20' },
+            { label: 'አበል እና ትራንስፖርት', data: b.allowance, backgroundColor: '#38a169' }
+        ] },
+        options: { ...base, plugins: { legend }, scales: stackedScales(false) }
+    }, any(b.fuel) || any(b.maint) || any(b.allowance));
+
+    const vehicles = fleetDashVehicles(d).filter(v => v.total > 0).slice(0, 8);
+    keep('vehicles', 'fd-vehicles', {
+        type: 'bar',
+        data: { labels: vehicles.map(v => v.label), datasets: [
+            { label: 'ነዳጅ', data: vehicles.map(v => Math.round(v.fuel)), backgroundColor: '#3182ce' },
+            { label: 'ጥገና', data: vehicles.map(v => Math.round(v.maint)), backgroundColor: '#dd6b20' }
+        ] },
+        options: { ...base, indexAxis: 'y', plugins: { legend }, scales: { x: { ...base.scales.x, stacked: true, beginAtZero: true }, y: { ...base.scales.y, stacked: true } } }
+    }, vehicles.length > 0);
+
+    keep('km', 'fd-km', {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'ኪ.ሜ', data: b.km, borderColor: '#805ad5', backgroundColor: 'rgba(128,90,213,0.15)', fill: true, tension: 0.3 }] },
+        options: base
+    }, any(b.km));
+
+    const statusCount = { active: 0, maintenance: 0, out_of_service: 0 };
+    (d.vehicles || []).forEach(v => { if (v.status in statusCount) statusCount[v.status] += 1; });
+    keep('status', 'fd-status', {
+        type: 'doughnut',
+        data: { labels: ['🟢 አገልግሎት ላይ', '🟡 ጥገና ላይ', '🔴 ከአገልግሎት ውጪ'], datasets: [{ data: [statusCount.active, statusCount.maintenance, statusCount.out_of_service], backgroundColor: ['#38a169', '#dd6b20', '#e53e3e'], borderWidth: 0 }] },
+        options: { ...base, plugins: { legend } , scales: {} }
+    }, (d.vehicles || []).length > 0);
+
+    const depts = (d.tripDept || []).map(r => ({ name: String(r._id || '').trim() || 'ያልታወቀ', est: Number(r.est) || 0 })).filter(r => r.est > 0).sort((a, c) => c.est - a.est);
+    const topDepts = depts.slice(0, 7);
+    const others = depts.slice(7).reduce((s, r) => s + r.est, 0);
+    if (others > 0) topDepts.push({ name: 'ሌሎች', est: others });
+    keep('dept', 'fd-dept', {
+        type: 'doughnut',
+        data: { labels: topDepts.map(r => r.name), datasets: [{ data: topDepts.map(r => Math.round(r.est)), backgroundColor: CHART_COLORS, borderWidth: 0 }] },
+        options: { ...base, plugins: { legend: { ...legend, position: 'right' } }, scales: {} }
+    }, topDepts.length > 0);
+
+    const price = b.fuel.map((cost, i) => (b.liters[i] > 0 ? Math.round((cost / b.liters[i]) * 100) / 100 : null));
+    keep('price', 'fd-price', {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'ብር/ሊትር', data: price, borderColor: '#d69e2e', backgroundColor: 'rgba(214,158,46,0.15)', fill: true, tension: 0.3, spanGaps: true }] },
+        options: base
+    }, price.some(v => v !== null));
+}
+
+function renderFleetDashAlerts() {
+    const box = document.getElementById('fleet-dash-alerts');
+    if (!box) return;
+    if (!fleetDashAlertList.length) {
+        box.innerHTML = '<p style="color:#68d391; font-size:13px;">✅ አሁን ትኩረት የሚሻ ሰነድ ወይም አገልግሎት የለም</p>';
+        const more = document.getElementById('fleet-dash-alerts-more');
+        if (more) more.innerHTML = '';
+        return;
+    }
+    const shown = fleetDashAlertList.slice(0, listLimit('fdalerts'));
+    box.innerHTML = '<ul style="list-style:none; padding:0; margin:0; font-size:13px; line-height:1.9;">' + shown.map(a => `<li>${fleetEsc(a.text)}</li>`).join('') + '</ul>';
+    listMoreBar('fleet-dash-alerts-more', 'fdalerts', fleetDashAlertList.length);
+}
+listRenderers.fdalerts = renderFleetDashAlerts;
