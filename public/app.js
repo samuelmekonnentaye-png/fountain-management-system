@@ -80,6 +80,14 @@ document.addEventListener("DOMContentLoaded", () => {
         userDisplay.innerText = `${currentUser.fullName || currentUser.username} (${currentUser.role})`;
     }
 
+    // Backup/Restore: every user can restore their own data (Admin: the whole system)
+    {
+        let restoreBlock = document.getElementById('restore-admin-only');
+        let restoreNote = document.getElementById('restore-admin-note');
+        if (restoreBlock) restoreBlock.style.display = 'block';
+        if (restoreNote) restoreNote.style.display = 'none';
+    }
+
     if (currentUser && currentUser.role !== 'Admin') {
         let menuUsers = document.getElementById('menu-users');
         if (menuUsers) menuUsers.style.display = 'none';
@@ -87,11 +95,6 @@ document.addEventListener("DOMContentLoaded", () => {
         let quickBtn = document.getElementById('admin-users-quick-btn');
         if (quickBtn) quickBtn.style.display = 'flex';
         fetchUsersList();
-
-        let restoreBlock = document.getElementById('restore-admin-only');
-        let restoreNote = document.getElementById('restore-admin-note');
-        if (restoreBlock) restoreBlock.style.display = 'block';
-        if (restoreNote) restoreNote.style.display = 'none';
 
         let fleetTrashBtnWrap = document.getElementById('fleet-vehicle-trash-btn-wrap');
         if (fleetTrashBtnWrap) fleetTrashBtnWrap.style.display = 'block';
@@ -1744,28 +1747,33 @@ async function restoreData(event) {
     reader.onload = async function (e) {
         try {
             let parsed = JSON.parse(e.target.result);
-            let url, body, summary;
+            let body, summary, warning;
             if (Array.isArray(parsed)) {                       // የድሮ ፋይል (ምዝገባ ብቻ)
-                url = '/api/records/restore';
-                body = { records: parsed };
+                body = { collections: { records: parsed } };
                 summary = `${parsed.length} መዝገቦች`;
-            } else if (parsed && parsed.collections) {         // አዲስ ሙሉ Backup
-                url = '/api/backup/restore';
-                body = { collections: parsed.collections };
+                warning = "ይህ አሁን ያለውን የምዝገባ ውሂብ ይተካዋል";
+            } else if (parsed && parsed.collections) {         // አዲስ Backup
+                body = { collections: parsed.collections, scope: parsed.scope, ownerId: parsed.ownerId };
                 summary = Object.entries(parsed.counts || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+                warning = parsed.scope === 'mine'
+                    ? "ይህ የእርስዎን ውሂብ ብቻ ይተካዋል (የሌሎች ሰዎች ዳታ አይነካም)"
+                    : "ይህ አሁን ያለውን የሙሉ ስርዓት ውሂብ ይተካዋል";
             } else {
                 alert("ይህ የ Backup ፋይል ትክክለኛ አይደለም።");
                 return;
             }
-            if (!confirm(`ይህ አሁን ያለውን ውሂብ በዚህ Backup ይተካዋል (${summary})። ይህ የማይቀለበስ ነው። እርግጠኛ ነዎት?`)) { return; }
-            let res = await authFetch(url, {
+            if (!confirm(`${warning} (${summary})። ይህ የማይቀለበስ ነው። እርግጠኛ ነዎት?`)) { return; }
+            let res = await authFetch('/api/backup/restore', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             });
             let data = await res.json();
             if (res.ok) {
-                alert(data.message || "ተመልሷል");
+                let extra = data.skipped && Object.keys(data.skipped).length
+                    ? "\nያልተመለሱ፦ " + Object.entries(data.skipped).map(([k, v]) => `${k}: ${v}`).join(", ")
+                    : "";
+                alert((data.message || "ተመልሷል") + extra);
                 location.reload();
             } else {
                 alert(data.error || "Restore ማድረግ አልተቻለም");
