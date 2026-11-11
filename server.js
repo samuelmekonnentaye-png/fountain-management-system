@@ -2496,7 +2496,9 @@ async function initAdmin() {
 }
 initAdmin();
 
-// ===== ሙሉ Backup / Restore (ምዝገባ + ፍሊት ሁሉም) =====
+// ===== Backup / Restore =====
+// Admin: ሙሉ ስርዓቱ (ሁሉም ተጠቃሚዎች + የጋራ ተሽከርካሪዎች) ይወርዳል/ይመለሳል።
+// ሌላ ተጠቃሚ: የራሱ ዳታ ብቻ (የራሱ ምዝገባ፣ ጉዞ፣ ጥገና፣ ነዳጅ፣ አበል) ይወርዳል/ይመለሳል።
 const BACKUP_MODELS = {
     records: Record,
     recordHistory: RecordHistory,
@@ -2507,18 +2509,60 @@ const BACKUP_MODELS = {
     fuelLogs: FuelLog,
     allowances: Allowance
 };
+// በ userId የሚለዩ (የእያንዳንዱ ተጠቃሚ የራሱ) ስብስቦች
+const USER_BACKUP_MODELS = {
+    records: Record,
+    trips: Trip,
+    maintenance: Maintenance,
+    fuelLogs: FuelLog,
+    allowances: Allowance
+};
 
-app.get('/api/backup', requireAdmin, async (req, res) => {
+async function insertBackupDocs(Model, docs) {
+    if (!docs.length) return { inserted: 0, skipped: 0 };
     try {
+        const r = await Model.insertMany(docs, { ordered: false });
+        return { inserted: r.length, skipped: docs.length - r.length };
+    } catch (e) {
+        const failed = (e.writeErrors && e.writeErrors.length)
+            || (e.results && e.results.writeErrors && e.results.writeErrors.length)
+            || docs.length;
+        return { inserted: docs.length - failed, skipped: failed };
+    }
+}
+function cleanBackupDoc(d) {
+    const c = { ...d };
+    delete c.__v;
+    return c;
+}
+
+app.get('/api/backup', requireAuth, async (req, res) => {
+    try {
+        const isAdmin = req.authUser.role === 'Admin';
+        const me = req.authUser.id;
         const collections = {};
         const counts = {};
-        for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
-            collections[key] = await Model.find({}).lean();
-            counts[key] = collections[key].length;
+
+        if (isAdmin) {
+            for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
+                collections[key] = await Model.find({}).lean();
+                counts[key] = collections[key].length;
+            }
+        } else {
+            for (const [key, Model] of Object.entries(USER_BACKUP_MODELS)) {
+                collections[key] = await Model.find({ userId: me }).lean();
+                counts[key] = collections[key].length;
+            }
+            const myRecordIds = collections.records.map(r => String(r._id));
+            collections.recordHistory = await RecordHistory.find({ recordId: { $in: myRecordIds } }).lean();
+            counts.recordHistory = collections.recordHistory.length;
         }
+
         res.json({
             app: 'fountain-management-system',
             version: 2,
+            scope: isAdmin ? 'all' : 'mine',
+            ownerId: isAdmin ? null : me,
             createdAt: new Date().toISOString(),
             counts,
             collections
@@ -2529,21 +2573,78 @@ app.get('/api/backup', requireAdmin, async (req, res) => {
     }
 });
 
-app.post('/api/backup/restore', requireAdmin, async (req, res) => {
+app.post('/api/backup/restore', requireAuth, async (req, res) => {
     try {
-        const cols = req.body && req.body.collections;
+        const isAdmin = req.authUser.role === 'Admin';
+        const me = req.authUser.id;
+        const body = req.body || {};
+        const cols = body.collections;
         if (!cols || typeof cols !== 'object') {
             return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
         }
-        const counts = {};
-        for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
-            if (!Array.isArray(cols[key])) continue; // በፋይሉ ውስጥ ከሌለ አይነካም
-            const docs = cols[key].map(r => { const c = { ...r }; delete c.__v; return c; });
-            await Model.deleteMany({});
-            if (docs.length > 0) await Model.insertMany(docs, { ordered: false });
-            counts[key] = docs.length;
+
+        // የማን ዳታ ነው የሚተካው? null = ሙሉ ስርዓት (Admin ብቻ)
+        let targetUser;
+        if (isAdmin) {
+            if (body.scope === 'mine') {
+                if (!body.ownerId) return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
+                targetUser = String(body.ownerId);
+            } else {
+                targetUser = null;
+            }
+        } else {
+            if (body.scope === 'all') {
+                return res.status(403).json({ error: 'የሙሉ ስርዓት Backup ን Admin ብቻ ነው መመለስ የሚችለው።' });
+            }
+            if (body.ownerId && String(body.ownerId) !== me) {
+                return res.status(403).json({ error: 'ይህ የሌላ ሰው Backup ነው፤ የራስዎን Backup ብቻ መመለስ ይችላሉ።' });
+            }
+            targetUser = me;
         }
-        res.json({ message: 'መረጃዎቹ ወደ ዳታቤዝ ተመልሰዋል!', counts });
+
+        const counts = {};
+        const skipped = {};
+
+        if (targetUser === null) {
+            // ሙሉ ስርዓት: በፋይሉ ውስጥ ያሉ ስብስቦችን ሁሉ ይተካል
+            for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
+                if (!Array.isArray(cols[key])) continue;
+                const docs = cols[key].map(cleanBackupDoc);
+                await Model.deleteMany({});
+                const r = await insertBackupDocs(Model, docs);
+                counts[key] = r.inserted;
+                if (r.skipped) skipped[key] = r.skipped;
+            }
+        } else {
+            // የአንድ ተጠቃሚ ዳታ ብቻ: የእሱን ይሰርዛል፣ ከፋይሉ ውስጥ የእሱን ብቻ ይመልሳል
+            let restoredRecordIds = null;
+            let oldRecordIds = [];
+            if (Array.isArray(cols.records)) {
+                oldRecordIds = (await Record.find({ userId: targetUser }, '_id').lean()).map(r => String(r._id));
+            }
+            for (const [key, Model] of Object.entries(USER_BACKUP_MODELS)) {
+                if (!Array.isArray(cols[key])) continue;
+                const mine = cols[key].filter(d => d && String(d.userId) === targetUser).map(cleanBackupDoc);
+                const others = cols[key].length - mine.length;
+                await Model.deleteMany({ userId: targetUser });
+                const r = await insertBackupDocs(Model, mine);
+                counts[key] = r.inserted;
+                if (r.skipped + others) skipped[key] = r.skipped + others;
+                if (key === 'records') restoredRecordIds = new Set(mine.map(d => String(d._id)));
+            }
+            // የምዝገባ ታሪክ (በፋይሉ ውስጥ ካለ ብቻ)
+            if (Array.isArray(cols.recordHistory) && restoredRecordIds) {
+                const hist = cols.recordHistory
+                    .filter(h => h && restoredRecordIds.has(String(h.recordId)))
+                    .map(cleanBackupDoc);
+                await RecordHistory.deleteMany({ recordId: { $in: oldRecordIds } });
+                const r = await insertBackupDocs(RecordHistory, hist);
+                counts.recordHistory = r.inserted;
+                if (r.skipped) skipped.recordHistory = r.skipped;
+            }
+        }
+
+        res.json({ message: 'መረጃዎቹ ወደ ዳታቤዝ ተመልሰዋል!', counts, skipped });
     } catch (err) {
         logError('Restore error:', err);
         res.status(500).json({ error: 'Restore ማድረግ አልተቻለም' });
