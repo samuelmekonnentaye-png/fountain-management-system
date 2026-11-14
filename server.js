@@ -2432,6 +2432,28 @@ app.get('/api/fleet/dashboard', requireAuth, requireModule('fleet_finance'), asy
     }
 });
 
+// ለደወል/ማሳወቂያ (ሪማይንደር): ተሽከርካሪዎች + የሚቀጥለው የሰርቪስ ቀን/ኪ.ሜ። ገንዘብ የለበትም።
+async function latestServiceDue() {
+    return Maintenance.aggregate([
+                { $match: { $or: [{ nextServiceDate: { $nin: ['', null] } }, { nextServiceKm: { $ne: null } }] } },
+                { $sort: { date: -1, createdAt: -1 } },
+                { $group: { _id: '$vehicleId', plate: { $first: '$vehiclePlate' }, type: { $first: '$vehicleType' }, nextServiceDate: { $first: '$nextServiceDate' }, nextServiceKm: { $first: '$nextServiceKm' }, lastDate: { $first: '$date' }, kinds: { $first: '$serviceKinds' } } }
+            ]);
+}
+app.get('/api/fleet/reminders', requireAuth, requireModule('fleet_maintenance', 'fleet_trips', 'fleet_finance'), async (req, res) => {
+    try {
+        const [vehicles, serviceDue, serviceKm] = await Promise.all([
+            Vehicle.find({ isDeleted: { $ne: true } }, 'plateNumber vehicleType currentKm').lean(),
+            latestServiceDue(),
+            latestServiceKm()
+        ]);
+        res.json({ vehicles, serviceDue, serviceKm });
+    } catch (err) {
+        logError('Fleet reminders error:', err);
+        res.status(500).json({ error: 'Reminders could not be loaded' });
+    }
+});
+
 app.get('/api/fleet/fuel-logs', requireAuth, requireModule('fleet_fuel', 'fleet_finance'), async (req, res) => {
     try {
         const range = dateRangeFilter(req.query, 'date');
