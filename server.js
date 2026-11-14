@@ -1489,6 +1489,12 @@ const maintenanceSchema = new mongoose.Schema({
     description: { type: String, default: '' },
     nextServiceKm: { type: Number, default: null },
     nextServiceDate: { type: String, default: '' },
+    // ሰርቪስ ሲሆን: የተደረገው የሰርቪስ አይነት ('leg' = የእግር፣ 'oil' = ዘይት) እና ለእያንዳንዱ የሚቀጥለው ኪ.ሜ
+    serviceKinds: { type: [String], default: [] },
+    nextServiceKmByKind: {
+        leg: { type: Number, default: null },
+        oil: { type: Number, default: null }
+    },
     receipt: { type: String, default: '' },
     preparedBy: signSlotSchema,
     approvedBy: signSlotSchema,
@@ -1496,6 +1502,54 @@ const maintenanceSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 const Maintenance = mongoose.model('Maintenance', maintenanceSchema);
+// የሰርቪስ ክፍተቶች (ኪ.ሜ): የእግር ሰርቪስ በየ10,000፣ የዘይት ሰርቪስ በየ5,000
+const SERVICE_INTERVAL_KM = { leg: 10000, oil: 5000 };
+// ከፎርሙ የመጣውን ዓይነት/የሰርቪስ አይነቶች/ኪ.ሜ ያጸዳል እና የሚቀጥለውን ኪ.ሜ ያሰላል።
+function buildMaintenanceService(body) {
+    const maintenanceType = ['routine', 'repair', 'both'].includes(body.maintenanceType) ? body.maintenanceType : 'routine';
+    const hasService = maintenanceType === 'routine' || maintenanceType === 'both';
+    let kinds = [];
+    if (hasService) {
+        let raw = body.serviceKinds;
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = []; } }
+        if (Array.isArray(raw)) kinds = Object.keys(SERVICE_INTERVAL_KM).filter(k => raw.includes(k));
+    }
+    const odometer = toNum(body.odometerKm, 0);
+    const manual = toNum(body.nextServiceKm, null);
+    const byKind = { leg: null, oil: null };
+    if (kinds.length && odometer > 0) {
+        kinds.forEach(k => { byKind[k] = odometer + SERVICE_INTERVAL_KM[k]; });
+        // አንድ አይነት ብቻ ከተመረጠ እና ተጠቃሚው ራሱ ኪ.ሜ ካስገባ የእሱ ይሠራል
+        if (kinds.length === 1 && manual !== null && manual > 0) byKind[kinds[0]] = manual;
+    }
+    const computed = kinds.map(k => byKind[k]).filter(v => v !== null);
+    let nextServiceKm = manual !== null && manual > 0 ? manual : (computed.length ? Math.min(...computed) : null);
+    let error = '';
+    if (hasService && !kinds.length) error = '\u12e8\u1230\u122d\u1264\u1235 \u12a0\u12ed\u1290\u1275 (\u12e8\u12a5\u130d\u122d \u12c8\u12ed\u121d \u12d8\u12ed\u1275) \u12ed\u121d\u1228\u1321';
+    else if (kinds.length && !(odometer > 0)) error = '\u12e8\u12aa\u120e\u121c\u1275\u122d \u1295\u1263\u1265 \u12ed\u1235\u1308\u1261';
+    return { error, maintenanceType, serviceKinds: kinds, nextServiceKmByKind: byKind, nextServiceKm };
+}
+// ለሪማይንደር: ለእያንዳንዱ ተሽከርካሪ እና የሰርቪስ አይነት የመጨረሻው ሰርቪስ የሚቀጥለው ኪ.ሜ
+async function latestServiceKm() {
+    const rows = await Maintenance.find(
+        { 'serviceKinds.0': { $exists: true } },
+        'vehicleId vehiclePlate vehicleType date serviceKinds nextServiceKmByKind createdAt'
+    ).sort({ date: -1, createdAt: -1 }).lean();
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+        for (const k of (r.serviceKinds || [])) {
+            const key = r.vehicleId + ':' + k;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const km = r.nextServiceKmByKind ? r.nextServiceKmByKind[k] : null;
+            if (km === null || km === undefined) continue;
+            out.push({ vehicleId: r.vehicleId, plate: r.vehiclePlate, kind: k, nextKm: km, lastDate: r.date });
+        }
+    }
+    return out;
+}
+
 
 const fuelLogSchema = new mongoose.Schema({
     userId: String,
@@ -1896,6 +1950,8 @@ app.post('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance
                 return res.status(500).json({ error: 'ደረሰኙን መጫን አልተቻለም' });
             }
         }
+        const svc = buildMaintenanceService(req.body);
+        if (svc.error) return res.status(400).json({ error: svc.error });
         const item = await Maintenance.create({
             userId: req.authUser.id,
             vehicleId: vehicle._id.toString(),
@@ -1903,11 +1959,13 @@ app.post('/api/fleet/maintenance', requireAuth, requireModule('fleet_maintenance
             vehicleType: vehicle.vehicleType,
             date,
             odometerKm: toNum(req.body.odometerKm, 0),
-            maintenanceType: ['routine', 'repair'].includes(maintenanceType) ? maintenanceType : 'routine',
+            maintenanceType: svc.maintenanceType,
+            serviceKinds: svc.serviceKinds,
+            nextServiceKmByKind: svc.nextServiceKmByKind,
             cost,
             garage: String(garage || '').trim(),
             description: String(description || '').trim(),
-            nextServiceKm: toNum(req.body.nextServiceKm, null),
+            nextServiceKm: svc.nextServiceKm,
             nextServiceDate: nextServiceDate || '',
             receipt
         });
@@ -1940,17 +1998,21 @@ app.put('/api/fleet/maintenance/:id', requireAuth, requireModule('fleet_maintena
         const vehicle = await Vehicle.findById(vehicleId || item.vehicleId);
         if (!vehicle) return res.status(404).json({ error: 'ተሽከርካሪው አልተገኘም' });
 
+        const svc = buildMaintenanceService(req.body);
+        if (svc.error) return res.status(400).json({ error: svc.error });
         const set = {
             vehicleId: vehicle._id.toString(),
             vehiclePlate: vehicle.plateNumber,
             vehicleType: vehicle.vehicleType,
             date,
             odometerKm: toNum(req.body.odometerKm, 0),
-            maintenanceType: ['routine', 'repair'].includes(maintenanceType) ? maintenanceType : 'routine',
+            maintenanceType: svc.maintenanceType,
+            serviceKinds: svc.serviceKinds,
+            nextServiceKmByKind: svc.nextServiceKmByKind,
             cost,
             garage: String(garage || '').trim(),
             description: String(description || '').trim(),
-            nextServiceKm: toNum(req.body.nextServiceKm, null),
+            nextServiceKm: svc.nextServiceKm,
             nextServiceDate: nextServiceDate || ''
         };
         if (req.file) {
@@ -2337,7 +2399,7 @@ app.get('/api/fleet/dashboard', requireAuth, requireModule('fleet_finance'), asy
         const signed = who => ({ [who + '.userId']: { $exists: true, $nin: [null, ''] } });
 
         const [fuelDaily, fuelVehicle, maintDaily, maintVehicle, allowanceDaily, tripDaily, tripVehicle, tripDept,
-            vehicles, serviceDue, pendingMaintenance, pendingAllowance] = await Promise.all([
+            vehicles, serviceDue, serviceKm, pendingMaintenance, pendingAllowance] = await Promise.all([
             FuelLog.aggregate([{ $match: { ...scope, ...within('date') } }, { $group: { _id: '$date', cost: total('cost'), liters: total('liters'), count: { $sum: 1 } } }]),
             FuelLog.aggregate([{ $match: { ...scope, ...within('date') } }, { $group: { _id: byVehicle, cost: total('cost'), liters: total('liters') } }]),
             Maintenance.aggregate([{ $match: { $and: [mScope, within('date')] } }, { $group: { _id: '$date', cost: total('cost'), count: { $sum: 1 } } }]),
@@ -2351,8 +2413,9 @@ app.get('/api/fleet/dashboard', requireAuth, requireModule('fleet_finance'), asy
             Maintenance.aggregate([
                 { $match: { $or: [{ nextServiceDate: { $nin: ['', null] } }, { nextServiceKm: { $ne: null } }] } },
                 { $sort: { date: -1, createdAt: -1 } },
-                { $group: { _id: '$vehicleId', plate: { $first: '$vehiclePlate' }, type: { $first: '$vehicleType' }, nextServiceDate: { $first: '$nextServiceDate' }, nextServiceKm: { $first: '$nextServiceKm' }, lastDate: { $first: '$date' } } }
+                { $group: { _id: '$vehicleId', plate: { $first: '$vehiclePlate' }, type: { $first: '$vehicleType' }, nextServiceDate: { $first: '$nextServiceDate' }, nextServiceKm: { $first: '$nextServiceKm' }, lastDate: { $first: '$date' }, kinds: { $first: '$serviceKinds' } } }
             ]),
+            latestServiceKm(),
             Maintenance.countDocuments({ $and: [mScope, signed('preparedBy'), unsigned('approvedBy')] }),
             Allowance.countDocuments({ $and: [aScope, signed('requester'), unsigned('approver')] })
         ]);
@@ -2361,7 +2424,7 @@ app.get('/api/fleet/dashboard', requireAuth, requireModule('fleet_finance'), asy
             from, to,
             scope: canViewAllFleet(req) ? 'all' : 'own',
             fuelDaily, fuelVehicle, maintDaily, maintVehicle, allowanceDaily, tripDaily, tripVehicle, tripDept,
-            vehicles, serviceDue, pendingMaintenance, pendingAllowance
+            vehicles, serviceDue, serviceKm, pendingMaintenance, pendingAllowance
         });
     } catch (err) {
         logError('Fleet dashboard error:', err);
