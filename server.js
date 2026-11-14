@@ -2496,9 +2496,15 @@ async function initAdmin() {
 }
 initAdmin();
 
-// ===== Backup / Restore =====
-// Admin: ሙሉ ስርዓቱ (ሁሉም ተጠቃሚዎች + የጋራ ተሽከርካሪዎች) ይወርዳል/ይመለሳል።
-// ሌላ ተጠቃሚ: የራሱ ዳታ ብቻ (የራሱ ምዝገባ፣ ጉዞ፣ ጥገና፣ ነዳጅ፣ አበል) ይወርዳል/ይመለሳል።
+// ===== Backup / Restore (signed, validated, with automatic safety copy) =====
+// Admin: ሙሉ ስርዓቱ ይወርዳል/ይመለሳል። ሌላ ተጠቃሚ: የራሱ ዳታ ብቻ።
+//
+// ደህንነት:
+//  1. ፊርማ: ሰርቨሩ ባካፑን በ HMAC (APP_SECRET) ይፈርማል። በ Notepad የተስተካከለ ወይም
+//     ከዚህ ሲስተም ያልወረደ ፋይል Restore አይደረግም።
+//  2. ማረጋገጥ: ምንም ከመሰረዙ በፊት ሁሉም ሰነድ ይፈተሻል። አንድ እንኳ ትክክል ካልሆነ ምንም አይነካም።
+//  3. የደህንነት ቅጂ: ከመተካቱ በፊት አሁን ያለው ዳታ በዳታቤዝ ውስጥ ይቀመጣል፣ እንዲሁም ለ
+//     አውርድ ይመለሳል። Restore ከተቋረጠ ራሱ ወደ ቀድሞው ለመመለስ ይሞክራል።
 const BACKUP_MODELS = {
     records: Record,
     recordHistory: RecordHistory,
@@ -2518,55 +2524,173 @@ const USER_BACKUP_MODELS = {
     allowances: Allowance
 };
 
-async function insertBackupDocs(Model, docs) {
-    if (!docs.length) return { inserted: 0, skipped: 0 };
-    try {
-        const r = await Model.insertMany(docs, { ordered: false });
-        return { inserted: r.length, skipped: docs.length - r.length };
-    } catch (e) {
-        const failed = (e.writeErrors && e.writeErrors.length)
-            || (e.results && e.results.writeErrors && e.results.writeErrors.length)
-            || docs.length;
-        return { inserted: docs.length - failed, skipped: failed };
-    }
+const backupSnapshotSchema = new mongoose.Schema({
+    ownerKey: String,          // 'all' ወይም የተጠቃሚ id
+    createdAt: { type: Date, default: Date.now },
+    reason: String,
+    payload: String,
+    signature: String
+});
+const BackupSnapshot = mongoose.model('BackupSnapshot', backupSnapshotSchema);
+const MAX_SNAPSHOTS_PER_OWNER = 5;
+
+const BACKUP_KEY = crypto.createHash('sha256').update('fountain-backup-v1:' + APP_SECRET).digest();
+function signBackupPayload(payloadStr) {
+    return crypto.createHmac('sha256', BACKUP_KEY).update(payloadStr).digest('hex');
 }
+function verifyBackupSignature(payloadStr, signature) {
+    if (typeof payloadStr !== 'string' || typeof signature !== 'string') return false;
+    const expected = Buffer.from(signBackupPayload(payloadStr), 'utf8');
+    const given = Buffer.from(signature, 'utf8');
+    return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+}
+
+// targetUser === null → ሙሉ ስርዓት፤ አለበለዚያ የዚያ ተጠቃሚ ዳታ ብቻ
+async function collectBackup(targetUser) {
+    const collections = {};
+    const counts = {};
+    if (targetUser === null) {
+        for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
+            collections[key] = await Model.find({}).lean();
+            counts[key] = collections[key].length;
+        }
+    } else {
+        for (const [key, Model] of Object.entries(USER_BACKUP_MODELS)) {
+            collections[key] = await Model.find({ userId: targetUser }).lean();
+            counts[key] = collections[key].length;
+        }
+        const ids = collections.records.map(r => String(r._id));
+        collections.recordHistory = await RecordHistory.find({ recordId: { $in: ids } }).lean();
+        counts.recordHistory = collections.recordHistory.length;
+    }
+    return { collections, counts };
+}
+
+function makeSignedBackup(targetUser, collections, counts) {
+    const payload = JSON.stringify({
+        app: 'fountain-management-system',
+        scope: targetUser === null ? 'all' : 'mine',
+        ownerId: targetUser,
+        createdAt: new Date().toISOString(),
+        counts,
+        collections
+    });
+    return {
+        format: 'fountain-backup',
+        version: 3,
+        counts, // ለማሳያ ብቻ፤ ሰርቨሩ Restore ሲያደርግ ከ payload ውስጥ ያለውን ብቻ ይጠቀማል
+        payload,
+        signature: signBackupPayload(payload)
+    };
+}
+
+async function saveSnapshot(targetUser, reason) {
+    const { collections, counts } = await collectBackup(targetUser);
+    const signed = makeSignedBackup(targetUser, collections, counts);
+    const ownerKey = targetUser === null ? 'all' : targetUser;
+    await BackupSnapshot.create({ ownerKey, reason, payload: signed.payload, signature: signed.signature });
+    const old = await BackupSnapshot.find({ ownerKey }).sort({ createdAt: -1 }).skip(MAX_SNAPSHOTS_PER_OWNER).select('_id').lean();
+    if (old.length) await BackupSnapshot.deleteMany({ _id: { $in: old.map(o => o._id) } });
+    return { signed, collections };
+}
+
 function cleanBackupDoc(d) {
     const c = { ...d };
     delete c.__v;
     return c;
 }
+async function insertBackupDocs(Model, docs) {
+    if (docs.length) await Model.insertMany(docs, { ordered: true }); // ማንኛውም ስህተት ይወረወራል
+}
+
+// ምንም ሳይሰርዝ ሁሉንም ይፈትሻል። ስህተት ካለ የስህተት መልእክት ይመልሳል፣ ትክክል ከሆነ null።
+async function validateBackupCollections(targetUser, cols) {
+    const keys = targetUser === null
+        ? Object.keys(BACKUP_MODELS)
+        : [...Object.keys(USER_BACKUP_MODELS), 'recordHistory'];
+    const idsByKey = {};
+    let anyPresent = false;
+
+    for (const key of keys) {
+        if (cols[key] === undefined) continue;
+        if (!Array.isArray(cols[key])) return `"${key}" ልክ አይደለም`;
+        anyPresent = true;
+        const Model = BACKUP_MODELS[key];
+        const seen = new Set();
+        for (let i = 0; i < cols[key].length; i++) {
+            const d = cols[key][i];
+            if (!d || typeof d !== 'object' || Array.isArray(d)) return `"${key}" #${i + 1}: ልክ ያልሆነ መዝገብ`;
+            const id = String(d._id || '');
+            if (!/^[0-9a-fA-F]{24}$/.test(id)) return `"${key}" #${i + 1}: ልክ ያልሆነ መታወቂያ`;
+            if (seen.has(id)) return `"${key}" #${i + 1}: የተደገመ መታወቂያ`;
+            seen.add(id);
+            if (targetUser !== null && USER_BACKUP_MODELS[key] && String(d.userId) !== targetUser) {
+                return `"${key}" #${i + 1}: የሌላ ተጠቃሚ መዝገብ አለ`;
+            }
+            const verr = new Model(cleanBackupDoc(d)).validateSync();
+            if (verr) return `"${key}" #${i + 1}: ${verr.message}`;
+        }
+        idsByKey[key] = seen;
+    }
+    if (!anyPresent) return 'ፋይሉ ምንም መረጃ የለውም';
+
+    if (targetUser !== null) {
+        if (cols.recordHistory !== undefined && cols.records === undefined) {
+            return 'የምዝገባ ታሪክ ያለ ምዝገባዎቹ አይመለስም';
+        }
+        if (idsByKey.recordHistory) {
+            for (const h of cols.recordHistory) {
+                if (!idsByKey.records.has(String(h.recordId))) return 'ታሪክ ከፋይሉ ውስጥ ከሌለ ምዝገባ ጋር ተያይዟል';
+            }
+        }
+        // ከፋይሉ የሚገቡ መታወቂያዎች የሌላ ተጠቃሚ ሰነድ እንዳይገጥሙ
+        for (const key of Object.keys(USER_BACKUP_MODELS)) {
+            if (!idsByKey[key] || idsByKey[key].size === 0) continue;
+            const clash = await USER_BACKUP_MODELS[key].exists({
+                _id: { $in: [...idsByKey[key]] },
+                userId: { $ne: targetUser }
+            });
+            if (clash) return `"${key}": መታወቂያ ከሌላ ተጠቃሚ መዝገብ ጋር ይጋጫል`;
+        }
+    }
+    return null;
+}
+
+// ያለውን ይተካል (ከላይ ያለው ማረጋገጫ ካለፈ በኋላ ብቻ ይጠራል)
+async function applyBackupReplace(targetUser, cols) {
+    const counts = {};
+    if (targetUser === null) {
+        for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
+            if (!Array.isArray(cols[key])) continue;
+            await Model.deleteMany({});
+            await insertBackupDocs(Model, cols[key].map(cleanBackupDoc));
+            counts[key] = cols[key].length;
+        }
+        return counts;
+    }
+    let oldRecordIds = [];
+    if (Array.isArray(cols.records)) {
+        oldRecordIds = (await Record.find({ userId: targetUser }, '_id').lean()).map(r => String(r._id));
+    }
+    for (const [key, Model] of Object.entries(USER_BACKUP_MODELS)) {
+        if (!Array.isArray(cols[key])) continue;
+        await Model.deleteMany({ userId: targetUser });
+        await insertBackupDocs(Model, cols[key].map(cleanBackupDoc));
+        counts[key] = cols[key].length;
+    }
+    if (Array.isArray(cols.recordHistory) && Array.isArray(cols.records)) {
+        await RecordHistory.deleteMany({ recordId: { $in: oldRecordIds } });
+        await insertBackupDocs(RecordHistory, cols.recordHistory.map(cleanBackupDoc));
+        counts.recordHistory = cols.recordHistory.length;
+    }
+    return counts;
+}
 
 app.get('/api/backup', requireAuth, async (req, res) => {
     try {
         const isAdmin = req.authUser.role === 'Admin';
-        const me = req.authUser.id;
-        const collections = {};
-        const counts = {};
-
-        if (isAdmin) {
-            for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
-                collections[key] = await Model.find({}).lean();
-                counts[key] = collections[key].length;
-            }
-        } else {
-            for (const [key, Model] of Object.entries(USER_BACKUP_MODELS)) {
-                collections[key] = await Model.find({ userId: me }).lean();
-                counts[key] = collections[key].length;
-            }
-            const myRecordIds = collections.records.map(r => String(r._id));
-            collections.recordHistory = await RecordHistory.find({ recordId: { $in: myRecordIds } }).lean();
-            counts.recordHistory = collections.recordHistory.length;
-        }
-
-        res.json({
-            app: 'fountain-management-system',
-            version: 2,
-            scope: isAdmin ? 'all' : 'mine',
-            ownerId: isAdmin ? null : me,
-            createdAt: new Date().toISOString(),
-            counts,
-            collections
-        });
+        const { collections, counts } = await collectBackup(isAdmin ? null : req.authUser.id);
+        res.json(makeSignedBackup(isAdmin ? null : req.authUser.id, collections, counts));
     } catch (err) {
         logError('Backup error:', err);
         res.status(500).json({ error: 'Backup ማድረግ አልተቻለም' });
@@ -2578,73 +2702,88 @@ app.post('/api/backup/restore', requireAuth, async (req, res) => {
         const isAdmin = req.authUser.role === 'Admin';
         const me = req.authUser.id;
         const body = req.body || {};
-        const cols = body.collections;
-        if (!cols || typeof cols !== 'object') {
-            return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
+
+        let scope, ownerId, cols;
+        const bk = body.backup;
+        if (bk && typeof bk === 'object') {
+            // ----- የተፈረመ ፋይል -----
+            if (!verifyBackupSignature(bk.payload, bk.signature)) {
+                return res.status(400).json({
+                    error: 'ይህ ፋይል ከዚህ ሲስተም ያልወረደ ወይም የተስተካከለ ነው። Restore አልተደረገም፤ ምንም ዳታ አልተነካም።'
+                });
+            }
+            let p;
+            try { p = JSON.parse(bk.payload); } catch (e) { p = null; }
+            if (!p || typeof p !== 'object' || !p.collections || typeof p.collections !== 'object') {
+                return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
+            }
+            scope = p.scope;
+            ownerId = p.ownerId ? String(p.ownerId) : null;
+            cols = p.collections;
+        } else if (isAdmin && body.legacy && body.collections && typeof body.collections === 'object') {
+            // ----- የድሮ ያልተፈረመ ፋይል: Admin ብቻ -----
+            scope = body.scope === 'mine' ? 'mine' : 'all';
+            ownerId = body.ownerId ? String(body.ownerId) : null;
+            cols = body.collections;
+        } else {
+            return res.status(403).json({
+                error: 'ያልተፈረመ (የድሮ) Backup ፋይል ተቀባይነት የለውም። አዲስ Backup አውርደው ይጠቀሙ።'
+            });
         }
 
         // የማን ዳታ ነው የሚተካው? null = ሙሉ ስርዓት (Admin ብቻ)
         let targetUser;
         if (isAdmin) {
-            if (body.scope === 'mine') {
-                if (!body.ownerId) return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
-                targetUser = String(body.ownerId);
+            if (scope === 'mine') {
+                if (!ownerId) return res.status(400).json({ error: 'ልክ ያልሆነ የBackup ፋይል' });
+                targetUser = ownerId;
             } else {
                 targetUser = null;
             }
         } else {
-            if (body.scope === 'all') {
+            if (scope !== 'mine') {
                 return res.status(403).json({ error: 'የሙሉ ስርዓት Backup ን Admin ብቻ ነው መመለስ የሚችለው።' });
             }
-            if (body.ownerId && String(body.ownerId) !== me) {
+            if (ownerId !== me) {
                 return res.status(403).json({ error: 'ይህ የሌላ ሰው Backup ነው፤ የራስዎን Backup ብቻ መመለስ ይችላሉ።' });
             }
             targetUser = me;
         }
 
-        const counts = {};
-        const skipped = {};
+        // 2. ሁሉንም ከመሰረዝ በፊት ማረጋገጥ
+        const problem = await validateBackupCollections(targetUser, cols);
+        if (problem) {
+            return res.status(400).json({ error: `Backup ፋይሉ ትክክል አይደለም (${problem})። ምንም ዳታ አልተነካም።` });
+        }
 
-        if (targetUser === null) {
-            // ሙሉ ስርዓት: በፋይሉ ውስጥ ያሉ ስብስቦችን ሁሉ ይተካል
-            for (const [key, Model] of Object.entries(BACKUP_MODELS)) {
-                if (!Array.isArray(cols[key])) continue;
-                const docs = cols[key].map(cleanBackupDoc);
-                await Model.deleteMany({});
-                const r = await insertBackupDocs(Model, docs);
-                counts[key] = r.inserted;
-                if (r.skipped) skipped[key] = r.skipped;
-            }
-        } else {
-            // የአንድ ተጠቃሚ ዳታ ብቻ: የእሱን ይሰርዛል፣ ከፋይሉ ውስጥ የእሱን ብቻ ይመልሳል
-            let restoredRecordIds = null;
-            let oldRecordIds = [];
-            if (Array.isArray(cols.records)) {
-                oldRecordIds = (await Record.find({ userId: targetUser }, '_id').lean()).map(r => String(r._id));
-            }
-            for (const [key, Model] of Object.entries(USER_BACKUP_MODELS)) {
-                if (!Array.isArray(cols[key])) continue;
-                const mine = cols[key].filter(d => d && String(d.userId) === targetUser).map(cleanBackupDoc);
-                const others = cols[key].length - mine.length;
-                await Model.deleteMany({ userId: targetUser });
-                const r = await insertBackupDocs(Model, mine);
-                counts[key] = r.inserted;
-                if (r.skipped + others) skipped[key] = r.skipped + others;
-                if (key === 'records') restoredRecordIds = new Set(mine.map(d => String(d._id)));
-            }
-            // የምዝገባ ታሪክ (በፋይሉ ውስጥ ካለ ብቻ)
-            if (Array.isArray(cols.recordHistory) && restoredRecordIds) {
-                const hist = cols.recordHistory
-                    .filter(h => h && restoredRecordIds.has(String(h.recordId)))
-                    .map(cleanBackupDoc);
-                await RecordHistory.deleteMany({ recordId: { $in: oldRecordIds } });
-                const r = await insertBackupDocs(RecordHistory, hist);
-                counts.recordHistory = r.inserted;
-                if (r.skipped) skipped.recordHistory = r.skipped;
+        // 3. የደህንነት ቅጂ
+        let snapshot;
+        try {
+            snapshot = await saveSnapshot(targetUser, 'before-restore by ' + me);
+        } catch (e) {
+            logError('Safety snapshot failed:', e);
+            return res.status(500).json({ error: 'የደህንነት ቅጂ ማስቀመጥ አልተቻለም፤ ስለዚህ Restore አልተደረገም። ምንም ዳታ አልተነካም።' });
+        }
+
+        let counts;
+        try {
+            counts = await applyBackupReplace(targetUser, cols);
+        } catch (err) {
+            logError('Restore failed midway, rolling back:', err);
+            try {
+                await applyBackupReplace(targetUser, snapshot.collections);
+                return res.status(500).json({ error: 'Restore አልተሳካም፤ ቀድሞ የነበረው ዳታ ተመልሷል።', rolledBack: true });
+            } catch (rbErr) {
+                logError('ROLLBACK FAILED (snapshot kept in BackupSnapshot collection):', rbErr);
+                return res.status(500).json({
+                    error: 'Restore አልተሳካም፤ ቀድሞ የነበረውንም ለመመለስ አልተቻለም። የደህንነት ቅጂው በዳታቤዝ ውስጥ ተቀምጧል፤ Admin ያነጋግሩ።',
+                    rolledBack: false,
+                    safety: snapshot.signed
+                });
             }
         }
 
-        res.json({ message: 'መረጃዎቹ ወደ ዳታቤዝ ተመልሰዋል!', counts, skipped });
+        res.json({ message: 'መረጃዎቹ ወደ ዳታቤዝ ተመልሰዋል!', counts, safety: snapshot.signed });
     } catch (err) {
         logError('Restore error:', err);
         res.status(500).json({ error: 'Restore ማድረግ አልተቻለም' });
