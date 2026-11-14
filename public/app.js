@@ -2450,12 +2450,11 @@ function renderMaintenanceList() {
         tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#a0aec0;">ምንም የጥገና ምዝገባ የለም</td></tr>`;
         return;
     }
-    const typeLabels = { routine: 'መደበኛ', repair: 'ጥገና' };
     tbody.innerHTML = fleetMaintenance.map(item => `
         <tr>
             <td>${fleetDateCell(item.date)}</td>
             <td>${fleetEsc(item.vehiclePlate)} (${fleetEsc(item.vehicleType)})</td>
-            <td>${typeLabels[item.maintenanceType] || item.maintenanceType}</td>
+            <td>${fleetEsc(maintTypeText(item))}</td>
             <td>${fleetEsc(item.description || '-')}</td>
             <td>${(item.cost||0).toLocaleString('en-US')} ብር</td>
             <td>${maintenanceSignCellHtml(item, 'prepared')}</td>
@@ -2465,6 +2464,74 @@ function renderMaintenanceList() {
 }
 
 let maintEditId = null;
+
+// ===== ጥገና / ሰርቪስ ዓይነት =====
+// routine = ሰርቪስ፣ repair = ጥገና፣ both = ሁለቱም። የሰርቪስ አይነቶች: leg = የእግር (10,000 ኪ.ሜ)፣ oil = ዘይት (5,000 ኪ.ሜ)
+const MAINT_SERVICE_INTERVALS = { leg: 10000, oil: 5000 };
+const MAINT_KIND_LABELS = { leg: 'የእግር ሰርቪስ', oil: 'የዘይት ሰርቪስ' };
+function maintTypeText(item) {
+    const base = { routine: 'ሰርቪስ', repair: 'ጥገና', both: 'ሰርቪስ + ጥገና' }[item.maintenanceType] || item.maintenanceType || '';
+    const kinds = (item.serviceKinds || []).map(k => MAINT_KIND_LABELS[k]).filter(Boolean);
+    return kinds.length ? `${base} (${kinds.join('፣ ')})` : base;
+}
+function maintSelectedKinds() {
+    const kinds = [];
+    ['leg', 'oil'].forEach(k => { const el = document.getElementById('maint-kind-' + k); if (el && el.checked) kinds.push(k); });
+    return kinds;
+}
+function maintCurrentType() {
+    const both = document.getElementById('maint-both');
+    if (both && both.checked) return 'both';
+    return document.getElementById('maint-type').value;
+}
+// ሰርቪስ ወይም ሁለቱም ሲመረጥ የሰርቪስ አይነቶች ይታያሉ፤ ጥገና ብቻ ከሆነ ይደበቃሉ
+function onMaintTypeChange() {
+    const both = document.getElementById('maint-both');
+    const sel = document.getElementById('maint-type');
+    if (sel) sel.disabled = !!(both && both.checked);
+    const hasService = maintCurrentType() !== 'repair';
+    const box = document.getElementById('maint-service-box');
+    if (box) box.style.display = hasService ? 'block' : 'none';
+    if (!hasService) {
+        ['leg', 'oil'].forEach(k => { const el = document.getElementById('maint-kind-' + k); if (el) el.checked = false; });
+    }
+    refreshMaintNextKm();
+}
+// ተጠቃሚው የሚቀጥለውን ኪ.ሜ ራሱ ካስተካከለ በራስ-መሙላት አይደርስበትም (ባዶ ካደረገው እንደገና ይሞላል)
+function maintNextKmEdited() {
+    const el = document.getElementById('maint-next-km');
+    if (!el) return;
+    if (el.value.trim() === '') delete el.dataset.manual; else el.dataset.manual = '1';
+    updateMaintNextPreview();
+}
+function updateMaintNextPreview() {
+    const prev = document.getElementById('maint-next-preview');
+    if (!prev) return;
+    const odo = getAmountValue('maint-odometer');
+    const kinds = maintSelectedKinds();
+    if (!kinds.length) { prev.textContent = ''; return; }
+    if (!(odo > 0)) { prev.textContent = 'የኪሎሜትር ንባብ ሲያስገቡ የሚቀጥለው ሰርቪስ ራሱ ይሰላል።'; return; }
+    const manualEl = document.getElementById('maint-next-km');
+    const manual = manualEl && manualEl.dataset.manual ? getAmountValue('maint-next-km') : NaN;
+    prev.textContent = 'የሚቀጥለው፦ ' + kinds.map(k => {
+        const km = (kinds.length === 1 && manual > 0) ? manual : odo + MAINT_SERVICE_INTERVALS[k];
+        return `${MAINT_KIND_LABELS[k]} ${km.toLocaleString('en-US')} ኪ.ሜ`;
+    }).join(' · ');
+}
+// የኪ.ሜ ንባብ + የሰርቪስ ክፍተት = የሚቀጥለው ኪ.ሜ (ሁለት አይነት ከተመረጠ ቅርቡ ይሞላል)
+function refreshMaintNextKm() {
+    const el = document.getElementById('maint-next-km');
+    if (el && !el.dataset.manual) {
+        const odo = getAmountValue('maint-odometer');
+        const kinds = maintSelectedKinds();
+        if (kinds.length && odo > 0) {
+            setAmountValue('maint-next-km', odo + Math.min(...kinds.map(k => MAINT_SERVICE_INTERVALS[k])));
+        } else {
+            el.value = '';
+        }
+    }
+    updateMaintNextPreview();
+}
 
 function setMaintenanceFormMode(editing) {
     const title = document.getElementById('maint-form-title');
@@ -2489,13 +2556,23 @@ function startMaintenanceEdit(id) {
     sel.value = item.vehicleId;
     document.getElementById('maint-date').value = item.date || '';
     setAmountValue('maint-odometer', item.odometerKm || '');
-    document.getElementById('maint-type').value = item.maintenanceType || 'routine';
+    const bothEl = document.getElementById('maint-both');
+    if (bothEl) bothEl.checked = item.maintenanceType === 'both';
+    document.getElementById('maint-type').value = item.maintenanceType === 'repair' ? 'repair' : 'routine';
+    ['leg', 'oil'].forEach(k => { const el = document.getElementById('maint-kind-' + k); if (el) el.checked = (item.serviceKinds || []).includes(k); });
     setAmountValue('maint-cost', item.cost || 0);
     document.getElementById('maint-garage').value = item.garage || '';
     document.getElementById('maint-description').value = item.description || '';
     setAmountValue('maint-next-km', item.nextServiceKm || '');
     document.getElementById('maint-next-date').value = item.nextServiceDate || '';
     document.getElementById('maint-receipt').value = '';
+    {   // የተቀመጠው የሚቀጥለው ኪ.ሜ ከሚሰላው ቢለይ ተጠቃሚው ራሱ ያስገባው ነው
+        const nk = document.getElementById('maint-next-km');
+        const kinds = maintSelectedKinds();
+        const auto = (kinds.length && item.odometerKm > 0) ? item.odometerKm + Math.min(...kinds.map(k => MAINT_SERVICE_INTERVALS[k])) : null;
+        if (nk) { if (item.nextServiceKm && item.nextServiceKm !== auto) nk.dataset.manual = '1'; else delete nk.dataset.manual; }
+    }
+    onMaintTypeChange();
     setMaintenanceFormMode(true);
     document.getElementById('maintenance-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -2503,6 +2580,8 @@ function startMaintenanceEdit(id) {
 function cancelMaintenanceEdit() {
     maintEditId = null;
     document.getElementById('maintenance-form').reset();
+    { const nk = document.getElementById('maint-next-km'); if (nk) delete nk.dataset.manual; }
+    onMaintTypeChange();
     setMaintenanceFormMode(false);
 }
 
@@ -2512,7 +2591,12 @@ async function handleMaintenanceSubmit(e) {
     fd.append('vehicleId', document.getElementById('maint-vehicle').value);
     fd.append('date', document.getElementById('maint-date').value);
     fd.append('odometerKm', getAmountValue('maint-odometer') || 0);
-    fd.append('maintenanceType', document.getElementById('maint-type').value);
+    const mType = maintCurrentType();
+    const mKinds = maintSelectedKinds();
+    if (mType !== 'repair' && !mKinds.length) { alert('የሰርቪስ አይነት (የእግር ወይም ዘይት) ይምረጡ'); return; }
+    if (mKinds.length && !(getAmountValue('maint-odometer') > 0)) { alert('የሚቀጥለው ሰርቪስ እንዲሰላ የኪሎሜትር ንባብ ያስገቡ'); return; }
+    fd.append('maintenanceType', mType);
+    fd.append('serviceKinds', JSON.stringify(mKinds));
     fd.append('cost', getAmountValue('maint-cost') || 0);
     fd.append('garage', document.getElementById('maint-garage').value.trim());
     fd.append('description', document.getElementById('maint-description').value.trim());
@@ -3546,10 +3630,9 @@ function buildFleetFinanceWorkbook(data, logo) {
 
     // 5) maintenance (detail)
     section('የጥገና ዝርዝር');
-    const typeLabels = { routine: 'መደበኛ', repair: 'ጥገና' };
     const maintSorted = data.maint.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ቀን', 'ተሽከርካሪ', 'ዓይነት', 'ጋራዥ/አቅራቢ', 'መግለጫ', 'ወጪ (ብር)', 'ሁኔታ'],
-        maintSorted.map((x, i) => [i + 1, isoToEthText(x.date), `${x.vehiclePlate || ''} (${fleetVehicleLabel(x)})`, typeLabels[x.maintenanceType] || x.maintenanceType || '', x.garage || '-', x.description || '-', x.cost || 0, fleetMaintStatusText(x)]),
+        maintSorted.map((x, i) => [i + 1, isoToEthText(x.date), `${x.vehiclePlate || ''} (${fleetVehicleLabel(x)})`, maintTypeText(x), x.garage || '-', x.description || '-', x.cost || 0, fleetMaintStatusText(x)]),
         [{}, {}, { align: 'left' }, {}, { align: 'left' }, { align: 'left' }, { fmt: MONEY, align: 'right' }, {}],
         { labelCol: 2, label: 'ድምር', cols: [7] });
 
@@ -4265,11 +4348,21 @@ function fleetDashAlerts(d, todayIso) {
             if (n < 0) alerts.push({ sev: 0, kind: 1, order: n, text: `🔧🔴 ${who} — የታቀደው የአገልግሎት ቀን አልፏል (${isoToEthText(sv.nextServiceDate)})` });
             else if (n <= FLEET_SERVICE_WARN_DAYS) alerts.push({ sev: 1, kind: 1, order: n, text: `🔧🟡 ${who} — ቀጣይ አገልግሎት በ${n} ቀን ውስጥ (${isoToEthText(sv.nextServiceDate)})` });
         }
-        if (sv.nextServiceKm !== null && sv.nextServiceKm !== undefined && carKm[String(sv._id)] !== undefined) {
+        if (!(sv.kinds && sv.kinds.length) && sv.nextServiceKm !== null && sv.nextServiceKm !== undefined && carKm[String(sv._id)] !== undefined) {
             const left = sv.nextServiceKm - carKm[String(sv._id)];
             if (left <= 0) alerts.push({ sev: 0, kind: 2, order: left, text: `🔧🔴 ${who} — የታቀደው የአገልግሎት ኪ.ሜ ደርሷል (${sv.nextServiceKm.toLocaleString('en-US')} ኪ.ሜ)` });
             else if (left <= FLEET_SERVICE_WARN_KM) alerts.push({ sev: 1, kind: 2, order: left, text: `🔧🟡 ${who} — ለቀጣይ አገልግሎት ${left.toLocaleString('en-US')} ኪ.ሜ ቀርቷል` });
         }
+    });
+    // ለእያንዳንዱ ተሽከርካሪ እና የሰርቪስ አይነት (እግር/ዘይት): ከጉዞ ምዝገባ የደረሰው ኪ.ሜ ከሚቀጥለው ሰርቪስ ኪ.ሜ ጋር ይነጻጸራል
+    (d.serviceKm || []).forEach(sk => {
+        const cur = carKm[String(sk.vehicleId)];
+        if (cur === undefined) return;
+        const who = `${sk.plate || ''}`;
+        const label = MAINT_KIND_LABELS[sk.kind] || 'ሰርቪስ';
+        const left = sk.nextKm - cur;
+        if (left <= 0) alerts.push({ sev: 0, kind: 2, order: left, text: `🔧🔴 ${who} — ${label} ደርሷል (${sk.nextKm.toLocaleString('en-US')} ኪ.ሜ፤ አሁን ${cur.toLocaleString('en-US')} ኪ.ሜ)` });
+        else if (left <= FLEET_SERVICE_WARN_KM) alerts.push({ sev: 1, kind: 2, order: left, text: `🔧🟡 ${who} — ለ${label} ${left.toLocaleString('en-US')} ኪ.ሜ ቀርቷል (${sk.nextKm.toLocaleString('en-US')} ኪ.ሜ)` });
     });
     return alerts.sort((a, b) => (a.sev - b.sev) || (a.kind - b.kind) || (a.order - b.order));
 }

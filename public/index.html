@@ -841,16 +841,19 @@
                             </div>
                             <div style="flex: 1; min-width: 160px;">
                                 <label>የኪሎሜትር ንባብ፡</label>
-                                <input type="text" inputmode="numeric" id="maint-odometer" oninput="formatAmountInput(this)">
+                                <input type="text" inputmode="numeric" id="maint-odometer" oninput="formatAmountInput(this); refreshMaintNextKm()">
                             </div>
                         </div>
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 160px;">
                                 <label>ዓይነት፡</label>
-                                <select id="maint-type">
-                                    <option value="routine">routine (መደበኛ)</option>
-                                    <option value="repair">repair (ጥገና)</option>
+                                <select id="maint-type" onchange="onMaintTypeChange()">
+                                    <option value="routine">ሰርቪስ</option>
+                                    <option value="repair">ጥገና</option>
                                 </select>
+                            </div>
+                            <div style="flex: 0 0 auto; min-width: 150px; display:flex; align-items:flex-end;">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:10px;"><input type="checkbox" id="maint-both" onchange="onMaintTypeChange()" style="width:auto; margin:0;"> ሁለቱም (ሰርቪስ እና ጥገና)</label>
                             </div>
                             <div style="flex: 1; min-width: 160px;">
                                 <label>ወጪ (ብር)፡</label>
@@ -861,14 +864,22 @@
                                 <input type="text" id="maint-garage">
                             </div>
                         </div>
+                        <div class="form-group" id="maint-service-box" style="display:none;">
+                            <label>የሰርቪስ አይነቶች ይምረጡ፡</label>
+                            <div style="display:flex; gap:22px; flex-wrap:wrap; margin-top:6px;">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="maint-kind-leg" onchange="refreshMaintNextKm()" style="width:auto; margin:0;"> የእግር ሰርቪስ (በየ 10,000 ኪ.ሜ)</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="maint-kind-oil" onchange="refreshMaintNextKm()" style="width:auto; margin:0;"> የዘይት ሰርቪስ (በየ 5,000 ኪ.ሜ)</label>
+                            </div>
+                            <div id="maint-next-preview" style="font-size:12px; color:#a0aec0; margin-top:6px;"></div>
+                        </div>
                         <div class="form-group">
                             <label>መግለጫ፡</label>
                             <textarea id="maint-description" rows="2" placeholder="የተደረገው ጥገና ምን እንደሆነ ይግለጹ"></textarea>
                         </div>
                         <div style="display: flex; gap: 15px; flex-wrap: wrap;" class="form-group">
                             <div style="flex: 1; min-width: 180px;">
-                                <label>የሚቀጥለው አገልግሎት ኪ.ሜ (አማራጭ)፡</label>
-                                <input type="text" inputmode="numeric" id="maint-next-km" oninput="formatAmountInput(this)">
+                                <label>የሚቀጥለው አገልግሎት ኪ.ሜ (አማራጭ፤ ራሱ ይሞላል)፡</label>
+                                <input type="text" inputmode="numeric" id="maint-next-km" oninput="formatAmountInput(this); maintNextKmEdited()">
                             </div>
                             <div style="flex: 1; min-width: 180px;">
                                 <label>የሚቀጥለው አገልግሎት ቀን (አማራጭ)፡</label>
