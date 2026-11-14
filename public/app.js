@@ -1722,19 +1722,24 @@ async function changePassword(e) {
     } catch (err) {}
 }
 
+function downloadJsonFile(obj, filename) {
+    const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const dl = document.createElement('a');
+    dl.href = url;
+    dl.download = filename;
+    document.body.appendChild(dl); dl.click(); dl.remove();
+    URL.revokeObjectURL(url);
+}
+
 async function backupData() {
     try {
         const res = await authFetch('/api/backup');
         const data = await res.json();
         if (!res.ok) { alert(data.error || "Backup ማድረግ አልተቻለም"); return; }
-        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const dl = document.createElement('a');
-        dl.href = url;
-        dl.download = `backup_${new Date().toISOString().split('T')[0]}.json`;
-        document.body.appendChild(dl); dl.click(); dl.remove();
-        URL.revokeObjectURL(url);
-        alert("Backup ወርዷል፦\n" + Object.entries(data.counts).map(([k, v]) => `${k}: ${v}`).join("\n"));
+        // ፋይሉ በሰርቨሩ የተፈረመ ነው፤ እንዳለ ነው የሚወርደው (ማስተካከል Restore ን ውድቅ ያደርጋል)
+        downloadJsonFile(data, `backup_${new Date().toISOString().split('T')[0]}.json`);
+        alert("Backup ወርዷል፦\n" + Object.entries(data.counts || {}).map(([k, v]) => `${k}: ${v}`).join("\n"));
     } catch (err) {
         alert("Backup ማድረግ አልተቻለም");
     }
@@ -1748,32 +1753,39 @@ async function restoreData(event) {
         try {
             let parsed = JSON.parse(e.target.result);
             let body, summary, warning;
-            if (Array.isArray(parsed)) {                       // የድሮ ፋይል (ምዝገባ ብቻ)
-                body = { collections: { records: parsed } };
-                summary = `${parsed.length} መዝገቦች`;
-                warning = "ይህ አሁን ያለውን የምዝገባ ውሂብ ይተካዋል";
-            } else if (parsed && parsed.collections) {         // አዲስ Backup
-                body = { collections: parsed.collections, scope: parsed.scope, ownerId: parsed.ownerId };
-                summary = Object.entries(parsed.counts || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
-                warning = parsed.scope === 'mine'
+            if (parsed && typeof parsed.payload === 'string' && typeof parsed.signature === 'string') {
+                // የተፈረመ ፋይል (ከዚህ ሲስተም የወረደ)
+                let inner = JSON.parse(parsed.payload);
+                body = { backup: { format: parsed.format, version: parsed.version, payload: parsed.payload, signature: parsed.signature } };
+                summary = Object.entries(inner.counts || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+                warning = inner.scope === 'mine'
                     ? "ይህ የእርስዎን ውሂብ ብቻ ይተካዋል (የሌሎች ሰዎች ዳታ አይነካም)"
                     : "ይህ አሁን ያለውን የሙሉ ስርዓት ውሂብ ይተካዋል";
+            } else if (Array.isArray(parsed)) {
+                // የድሮ (ያልተፈረመ) ፋይል: Admin ብቻ
+                body = { legacy: true, collections: { records: parsed } };
+                summary = `${parsed.length} መዝገቦች`;
+                warning = "ይህ ያልተፈረመ የድሮ ፋይል ነው፤ አሁን ያለውን የምዝገባ ውሂብ ይተካዋል";
+            } else if (parsed && parsed.collections) {
+                body = { legacy: true, collections: parsed.collections, scope: parsed.scope, ownerId: parsed.ownerId };
+                summary = Object.entries(parsed.counts || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+                warning = "ይህ ያልተፈረመ የድሮ ፋይል ነው፤ አሁን ያለውን ውሂብ ይተካዋል";
             } else {
                 alert("ይህ የ Backup ፋይል ትክክለኛ አይደለም።");
                 return;
             }
-            if (!confirm(`${warning} (${summary})። ይህ የማይቀለበስ ነው። እርግጠኛ ነዎት?`)) { return; }
+            if (!confirm(`${warning} (${summary})።\n\nከመተካቱ በፊት አሁን ያለው ውሂብ የደህንነት ቅጂ ሆኖ ራሱ ይወርዳል። እርግጠኛ ነዎት?`)) { return; }
             let res = await authFetch('/api/backup/restore', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             });
             let data = await res.json();
+            if (data.safety) {
+                downloadJsonFile(data.safety, `safety_before_restore_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+            }
             if (res.ok) {
-                let extra = data.skipped && Object.keys(data.skipped).length
-                    ? "\nያልተመለሱ፦ " + Object.entries(data.skipped).map(([k, v]) => `${k}: ${v}`).join(", ")
-                    : "";
-                alert((data.message || "ተመልሷል") + extra);
+                alert((data.message || "ተመልሷል") + "\nየቀድሞው ውሂብ ቅጂ (safety_before_restore_...) ወርዷል፤ ያስቀምጡት።");
                 location.reload();
             } else {
                 alert(data.error || "Restore ማድረግ አልተቻለም");
