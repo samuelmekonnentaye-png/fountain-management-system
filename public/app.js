@@ -104,6 +104,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     fetchRecords();
     fetchApprovalNotifications();
+    fetchFleetReminders();
     setupDocumentModalZoom();
 
     // Keep nagging about open reminders every 5 minutes while the app stays
@@ -114,6 +115,7 @@ document.addEventListener("DOMContentLoaded", () => {
         notifiedRecordIds.clear();
         checkAndTriggerNotifications();
         fetchApprovalNotifications();
+        fetchFleetReminders();
     }, 5 * 60 * 1000);
 });
 
@@ -1492,6 +1494,39 @@ function handleApprovalNotificationClick(notifId, recordId, module) {
     }
 }
 
+// ===== የፍሊት ሰርቪስ ሪማይንደር: ደወል (🔔) + ማሳወቂያ + ድምጽ (እንደ ሌሎቹ ክፍያዎች) =====
+let fleetServiceNotifs = [];
+async function fetchFleetReminders() {
+    if (!currentUser) return;
+    if (!(canUseModule('fleet_maintenance') || canUseModule('fleet_trips') || canUseModule('fleet_finance'))) return;
+    try {
+        const res = await authFetch('/api/fleet/reminders');
+        if (!res.ok) return;
+        const d = await res.json();
+        // የሰርቪስ ማሳሰቢያዎች ብቻ (ቀን እና ኪ.ሜ)
+        fleetServiceNotifs = fleetDashAlerts(d, dateToISO(new Date()))
+            .filter(x => x.kind === 1 || x.kind === 2)
+            .map(x => ({ key: x.key || x.text, sev: x.sev, text: x.text }));
+        checkAndTriggerNotifications();
+    } catch (err) {
+        // ማሳሰቢያው ከሌለ ሌላው አይቋረጥም
+    }
+}
+function dismissFleetNotif(idx, event) {
+    if (event) event.stopPropagation();
+    const n = fleetServiceNotifs[idx];
+    if (!n) return;
+    dismissedNotifIds.add(n.key);
+    notifiedRecordIds.add('fleet-' + n.key);
+    checkAndTriggerNotifications();
+}
+function handleFleetNotifClick() {
+    const dd = document.getElementById('notif-dropdown');
+    if (dd) dd.classList.remove('show');
+    showSection('fleet-maintenance-sec', 'menu-fleet-maintenance');
+    fetchMaintenanceList();
+}
+
 function checkAndTriggerNotifications() {
     let today = new Date();
     today.setHours(0,0,0,0);
@@ -1511,11 +1546,12 @@ function checkAndTriggerNotifications() {
     });
 
     let unreadApprovals = approvalNotifications.filter(n => !n.read);
+    let fleetNotifs = fleetServiceNotifs.filter(n => !dismissedNotifIds.has(n.key));
     let badge = document.getElementById('notif-badge');
     let notifList = document.getElementById('notif-list');
 
     if (badge && notifList) {
-        let totalCount = urgentRecords.length + unreadApprovals.length;
+        let totalCount = urgentRecords.length + unreadApprovals.length + fleetNotifs.length;
         if (totalCount > 0) {
             badge.style.display = 'inline-block';
             badge.innerText = totalCount;
@@ -1530,6 +1566,16 @@ function checkAndTriggerNotifications() {
                         <div style="padding-right: 20px;">
                             ${icon} <span style="font-size: 12px;">${fleetEsc(n.message)}</span>
                         </div>
+                    </div>
+                `;
+            });
+
+            fleetNotifs.forEach(n => {
+                const idx = fleetServiceNotifs.indexOf(n);
+                notifList.innerHTML += `
+                    <div class="notif-item" onclick="handleFleetNotifClick()" style="cursor: pointer; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); position: relative;">
+                        <span onclick="dismissFleetNotif(${idx}, event)" title="አሰናብት" style="position: absolute; top: 6px; right: 6px; cursor: pointer; color: #a0aec0; font-weight: bold; padding: 2px 6px;">&times;</span>
+                        <div style="padding-right: 20px; font-size: 12px;">${fleetEsc(n.text)}</div>
                     </div>
                 `;
             });
@@ -1582,6 +1628,16 @@ function checkAndTriggerNotifications() {
         newApprovals.forEach(n => {
             showToast((n.type === 'approved' ? '✅ ' : '✍️ ') + n.message);
             notifiedRecordIds.add('notif-' + n._id);
+        });
+    }
+
+    // የፍሊት ሰርቪስ ሪማይንደር: አዲስ ለሆኑት አንድ ጊዜ ማሳወቂያ + ድምጽ
+    let newFleet = fleetNotifs.filter(n => !notifiedRecordIds.has('fleet-' + n.key));
+    if (newFleet.length > 0) {
+        playReminderSound();
+        newFleet.forEach(n => {
+            showToast(n.text);
+            notifiedRecordIds.add('fleet-' + n.key);
         });
     }
 }
@@ -3809,6 +3865,7 @@ function fleetDateCell(iso) {
 // Any trip / fuel / maintenance change makes an already generated report out
 // of date; hide it so a stale one is never downloaded by mistake.
 function invalidateFleetReports() {
+    if (typeof fetchFleetReminders === 'function') fetchFleetReminders();
     fleetReportData = null;
     fleetFinanceData = null;
     ['freport-result', 'ffin-result'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
@@ -4361,8 +4418,11 @@ function fleetDashAlerts(d, todayIso) {
         const who = `${sk.plate || ''}`;
         const label = MAINT_KIND_LABELS[sk.kind] || 'ሰርቪስ';
         const left = sk.nextKm - cur;
-        if (left <= 0) alerts.push({ sev: 0, kind: 2, order: left, text: `🔧🔴 ${who} — ${label} ደርሷል (${sk.nextKm.toLocaleString('en-US')} ኪ.ሜ፤ አሁን ${cur.toLocaleString('en-US')} ኪ.ሜ)` });
-        else if (left <= FLEET_SERVICE_WARN_KM) alerts.push({ sev: 1, kind: 2, order: left, text: `🔧🟡 ${who} — ለ${label} ${left.toLocaleString('en-US')} ኪ.ሜ ቀርቷል (${sk.nextKm.toLocaleString('en-US')} ኪ.ሜ)` });
+        const next = sk.nextKm.toLocaleString('en-US'), now = cur.toLocaleString('en-US');
+        const key = `svc:${sk.vehicleId}:${sk.kind}:${sk.nextKm}:`;
+        if (left === 0) alerts.push({ sev: 0, kind: 2, order: left, key: key + '0', text: `🔧🔴 ${who} — ${label} ደርሷል (${next} ኪ.ሜ)` });
+        else if (left < 0) alerts.push({ sev: 0, kind: 2, order: left, key: key + '0', text: `🔧🔴 ${who} — ${label} አልፏል (የታቀደው ${next} ኪ.ሜ፤ አሁን ${now} ኪ.ሜ፣ ${(-left).toLocaleString('en-US')} ኪ.ሜ በላይ)` });
+        else if (left <= FLEET_SERVICE_WARN_KM) alerts.push({ sev: 1, kind: 2, order: left, key: key + '1', text: `🔧🟡 ${who} — ለ${label.replace(/^የ/, '')} ${left.toLocaleString('en-US')} ኪ.ሜ ቀርቷል (${next} ኪ.ሜ)` });
     });
     return alerts.sort((a, b) => (a.sev - b.sev) || (a.kind - b.kind) || (a.order - b.order));
 }
