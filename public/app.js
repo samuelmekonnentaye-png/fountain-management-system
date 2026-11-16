@@ -3664,15 +3664,15 @@ function buildFleetFinanceWorkbook(data, logo) {
     // 2) by vehicle
     section('በተሽከርካሪ', 9);
     r = writeFleetXlTable(ws, kit, r,
-        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
+        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
         m.vehicles.map((v, i) => [i + 1, v.label, v.trips, v.km, v.est, v.liters, v.fuelCost, v.maintCost, v.total]),
         [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }],
         { labelCol: 2, label: 'ድምር', cols: [3, 4, 5, 6, 7, 8, 9] },
         { 9: (row, arr) => ({ formula: `G${row}+H${row}`, result: Math.round(((arr[6] || 0) + (arr[7] || 0)) * 100) / 100 }) });
 
     // 3) by department (from trips)
-    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ግምታዊ ነዳጅ)', 5);
-    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)'],
+    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ነዳጅ)', 5);
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', ' ነዳጅ (ብር)'],
         m.depts.map((x, i) => [i + 1, x.name, x.trips, x.km, x.est]),
         [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }],
         { labelCol: 2, label: 'ድምር', cols: [3, 4, 5] });
