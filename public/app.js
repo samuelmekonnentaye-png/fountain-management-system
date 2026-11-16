@@ -3520,7 +3520,7 @@ function renderFleetFinancePreview() {
         <tr><td>3</td><td>አበል እና ትራንስፖርት (${num(m.allowanceCount)} ጥያቄ)</td><td>${money(m.allowanceCost)}</td></tr>
         <tr style="font-weight:bold;"><td></td><td>ጠቅላላ ወጪ</td><td>${money(m.total)}</td></tr>
         ${m.allowancePendingCount ? `<tr style="color:#d69e2e;"><td></td><td>ከአበሉ ውስጥ ገና ያልጸደቁ (${num(m.allowancePendingCount)}) — በጠቅላላው ተካተዋል</td><td>${money(m.allowancePending)}</td></tr>` : ''}
-        <tr style="color:#a0aec0;"><td></td><td>ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
+        <tr style="color:#a0aec0;"><td></td><td> የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
     document.getElementById('ffin-vehicle-list').innerHTML = m.vehicles.length ? m.vehicles.map((v, i) => `
         <tr>
             <td>${i + 1}</td><td>${fleetEsc(v.label)}</td><td>${num(v.trips)}</td><td>${num(v.km)}</td>
@@ -3650,7 +3650,7 @@ function buildFleetFinanceWorkbook(data, logo) {
         [3, 'አበል እና ትራንስፖርት', m.allowanceCost]
     ], [{}, { align: 'left' }, { fmt: MONEY, align: 'right' }], { labelCol: 2, label: 'ጠቅላላ ወጪ', cols: [3] });
     r -= 1;
-    kit.band(r, `ማስታወሻ፦ ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
+    kit.band(r, `ማስታወሻ፦ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
         { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
     r += 1;
     if (m.allowancePendingCount > 0) {
@@ -3663,15 +3663,15 @@ function buildFleetFinanceWorkbook(data, logo) {
     // 2) by vehicle
     section('በተሽከርካሪ');
     r = writeFleetXlTable(ws, kit, r,
-        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
+        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
         m.vehicles.map((v, i) => [i + 1, v.label, v.trips, v.km, v.est, v.liters, v.fuelCost, v.maintCost, v.total]),
         [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }],
         { labelCol: 2, label: 'ድምር', cols: [3, 4, 5, 6, 7, 8, 9] },
         { 9: (row, arr) => ({ formula: `G${row}+H${row}`, result: Math.round(((arr[6] || 0) + (arr[7] || 0)) * 100) / 100 }) });
 
     // 3) by department (from trips)
-    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ግምታዊ ነዳጅ)');
-    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)'],
+    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ነዳጅ)');
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', ' ነዳጅ (ብር)'],
         m.depts.map((x, i) => [i + 1, x.name, x.trips, x.km, x.est]),
         [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }],
         { labelCol: 2, label: 'ድምር', cols: [3, 4, 5] });
