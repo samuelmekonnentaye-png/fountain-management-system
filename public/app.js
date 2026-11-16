@@ -3130,7 +3130,7 @@ function buildFleetReportWorkbook(data, logo) {
     // ---------- summary ----------
     // Start the summary on a fresh printed page when the daily tables are long.
     if (includeDetail && r > 25) ws.getRow(r - 1).addPageBreak();
-    band(r, `ማጠቃለያ — ${rangeText}`, { size: 13, color: 'FFFFFFFF', bg: NAVY, height: 26 });
+    band(r, `ማጠቃለያ — ${rangeText}`, { to: 5, size: 13, color: 'FFFFFFFF', bg: NAVY, height: 26 });
     r += 2;
     const useFormulas = includeDetail && rangeFirst !== null;
     const B = `$B$${rangeFirst}:$B$${rangeLast}`, D = `$D$${rangeFirst}:$D$${rangeLast}`;
@@ -3179,7 +3179,7 @@ function buildFleetReportWorkbook(data, logo) {
     summaryTable('በዲፓርትመንት', 'ዲፓርትመንት', deptRows, B);
     summaryTable('በመኪና አይነት', 'የመኪና አይነት', vehRows, D);
 
-    band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
+    band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { to: 5, bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
     return wb;
 }
 
@@ -3520,7 +3520,7 @@ function renderFleetFinancePreview() {
         <tr><td>3</td><td>አበል እና ትራንስፖርት (${num(m.allowanceCount)} ጥያቄ)</td><td>${money(m.allowanceCost)}</td></tr>
         <tr style="font-weight:bold;"><td></td><td>ጠቅላላ ወጪ</td><td>${money(m.total)}</td></tr>
         ${m.allowancePendingCount ? `<tr style="color:#d69e2e;"><td></td><td>ከአበሉ ውስጥ ገና ያልጸደቁ (${num(m.allowancePendingCount)}) — በጠቅላላው ተካተዋል</td><td>${money(m.allowancePending)}</td></tr>` : ''}
-        <tr style="color:#a0aec0;"><td></td><td> የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
+        <tr style="color:#a0aec0;"><td></td><td>ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)</td><td>${money(m.est)}</td></tr>`;
     document.getElementById('ffin-vehicle-list').innerHTML = m.vehicles.length ? m.vehicles.map((v, i) => `
         <tr>
             <td>${i + 1}</td><td>${fleetEsc(v.label)}</td><td>${num(v.trips)}</td><td>${num(v.km)}</td>
@@ -3640,44 +3640,45 @@ function buildFleetFinanceWorkbook(data, logo) {
     }
 
     let r = 6;
-    const section = title => { kit.band(r, title, { size: 12, bg: kit.LIGHT, align: 'left', border: true, height: 22 }); r += 1; };
+    // ርዕሱ የሚዘረጋው እስከ ሰንጠረዡ ስፋት (n አምዶች) ብቻ ነው
+    const section = (title, n) => { kit.band(r, title, { to: n, size: 12, bg: kit.LIGHT, align: 'left', border: true, height: 22 }); r += 1; };
 
     // 1) summary
-    section('ማጠቃለያ');
+    section('ማጠቃለያ', 3);
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'የወጪ አይነት', 'መጠን (ብር)'], [
         [1, 'የነዳጅ ግዢ ', m.fuelCost],
         [2, 'የጥገና ወጪ', m.maintCost],
         [3, 'አበል እና ትራንስፖርት', m.allowanceCost]
     ], [{}, { align: 'left' }, { fmt: MONEY, align: 'right' }], { labelCol: 2, label: 'ጠቅላላ ወጪ', cols: [3] });
     r -= 1;
-    kit.band(r, `ማስታወሻ፦ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
-        { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
+    kit.band(r, `ማስታወሻ፦ ግምታዊ የነዳጅ ወጪ ከጉዞ ምዝገባ (ለንጽጽር ብቻ፣ በጠቅላላው ውስጥ አልተካተተም)፦ ${m.est.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር`,
+        { to: 3, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 42 });
     r += 1;
     if (m.allowancePendingCount > 0) {
         kit.band(r, `ማስታወሻ፦ በአበሉ ድምር ውስጥ ገና ያልጸደቁ ${m.allowancePendingCount} ጥያቄዎች (${m.allowancePending.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ብር) ተካተዋል`,
-            { to: COLS, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 20 });
+            { to: 3, bold: false, italic: true, size: 10, color: 'FF595959', align: 'left', height: 42 });
         r += 1;
     }
     r += 1;
 
     // 2) by vehicle
-    section('በተሽከርካሪ');
+    section('በተሽከርካሪ', 9);
     r = writeFleetXlTable(ws, kit, r,
-        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
+        ['ተ.ቁ', 'ተሽከርካሪ', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)', 'የገዙት ነዳጅ (ሊትር)', 'የነዳጅ ግዢ (ብር)', 'የጥገና (ብር)', 'ጠቅላላ ወጪ (ብር)'],
         m.vehicles.map((v, i) => [i + 1, v.label, v.trips, v.km, v.est, v.liters, v.fuelCost, v.maintCost, v.total]),
         [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }],
         { labelCol: 2, label: 'ድምር', cols: [3, 4, 5, 6, 7, 8, 9] },
         { 9: (row, arr) => ({ formula: `G${row}+H${row}`, result: Math.round(((arr[6] || 0) + (arr[7] || 0)) * 100) / 100 }) });
 
     // 3) by department (from trips)
-    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ነዳጅ)');
-    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', ' ነዳጅ (ብር)'],
+    section('በዲፓርትመንት (ከጉዞ ምዝገባ፣ ግምታዊ ነዳጅ)', 5);
+    r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ዲፓርትመንት', 'የጉዞ ብዛት', 'የተጓዙት ኪ.ሜ', 'ግምታዊ ነዳጅ (ብር)'],
         m.depts.map((x, i) => [i + 1, x.name, x.trips, x.km, x.est]),
         [{}, { align: 'left' }, { fmt: INT }, { fmt: INT }, { fmt: MONEY, align: 'right' }],
         { labelCol: 2, label: 'ድምር', cols: [3, 4, 5] });
 
     // 4) fuel purchases (detail)
-    section('የነዳጅ ግዢ ዝርዝር (በደረሰኝ)');
+    section('የነዳጅ ግዢ ዝርዝር (በደረሰኝ)', 7);
     const fuelSorted = data.fuel.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ቀን', 'ተሽከርካሪ', 'ማደያ', 'ሊትር', 'ዋጋ (ብር)', 'የኪ.ሜ ንባብ'],
         fuelSorted.map((f, i) => [i + 1, isoToEthText(f.date), `${f.vehiclePlate || ''} (${fleetVehicleLabel(f)})`, f.station || '-', f.liters || 0, f.cost || 0, f.odometerKm || 0]),
@@ -3685,7 +3686,7 @@ function buildFleetFinanceWorkbook(data, logo) {
         { labelCol: 2, label: 'ድምር', cols: [5, 6] });
 
     // 5) maintenance (detail)
-    section('የጥገና ዝርዝር');
+    section('የጥገና ዝርዝር', 8);
     const maintSorted = data.maint.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ቀን', 'ተሽከርካሪ', 'ዓይነት', 'ጋራዥ/አቅራቢ', 'መግለጫ', 'ወጪ (ብር)', 'ሁኔታ'],
         maintSorted.map((x, i) => [i + 1, isoToEthText(x.date), `${x.vehiclePlate || ''} (${fleetVehicleLabel(x)})`, maintTypeText(x), x.garage || '-', x.description || '-', x.cost || 0, fleetMaintStatusText(x)]),
@@ -3693,14 +3694,14 @@ function buildFleetFinanceWorkbook(data, logo) {
         { labelCol: 2, label: 'ድምር', cols: [7] });
 
     // 6) allowance requests (detail)
-    section('የአበል ዝርዝር (የጸደቁትም ያልጸደቁትም በጠቅላላው ይቆጠራሉ፤ ሁኔታው በመጨረሻው አምድ ይታያል)');
+    section('የአበል ዝርዝር (የጸደቁትም ያልጸደቁትም በጠቅላላው ይቆጠራሉ፤ ሁኔታው በመጨረሻው አምድ ይታያል)', 8);
     const alSorted = (data.allowances || []).slice().sort((a, b) => String(a.fromDate).localeCompare(String(b.fromDate)));
     r = writeFleetXlTable(ws, kit, r, ['ተ.ቁ', 'ሰራተኛ', 'የሄዱበት ቦታ', 'ጊዜ (ከ - እስከ)', 'ቀናት', 'ለአበል (ብር)', 'ለትራንስፖርት (ብር)', 'ሁኔታ'],
         alSorted.map((x, i) => [i + 1, x.employeeName || '', x.destination || '', `${isoToEthText(x.fromDate)} - ${isoToEthText(x.toDate)}`, x.days || 1, x.costAllowance || 0, x.costTransport || 0, allowanceStatusPlain(x)]),
         [{}, { align: 'left' }, { align: 'left' }, {}, { fmt: INT }, { fmt: MONEY, align: 'right' }, { fmt: MONEY, align: 'right' }, {}],
         { labelCol: 2, label: 'ድምር (ሁሉም ጥያቄ)', cols: [5, 6, 7] });
 
-    kit.band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
+    kit.band(r, `የተዘጋጀበት ቀን፦ ${isoToEthText(dateToISO(new Date()))} ዓ.ም`, { to: 3, bold: false, size: 10, color: 'FF595959', align: 'left', height: 18 });
     return wb;
 }
 
